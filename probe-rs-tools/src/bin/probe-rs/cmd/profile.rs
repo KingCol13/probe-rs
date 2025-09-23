@@ -6,6 +6,7 @@ use std::time::Instant;
 use addr2line::Loader;
 use anyhow::anyhow;
 use itm::TracePacket;
+use probe_rs::Session;
 use probe_rs::config::Registry;
 use probe_rs::{
     architecture::arm::{
@@ -16,6 +17,8 @@ use probe_rs::{
     },
     probe::list::Lister,
 };
+use probe_rs_debug::DebugInfo;
+use probe_rs_debug::DebugRegisters;
 
 use crate::util::flash::{build_loader, run_flash_download};
 use tracing::info;
@@ -41,12 +44,23 @@ pub struct ProfileCmd {
     limit: usize,
     /// Profile Method
     #[clap(subcommand)]
-    method: ProfileMethod,
+    profile_type: ProfileType,
 }
 
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum ProfileMethod {
+pub enum ProfileType {
+    #[clap(name = "function")]
+    #[clap(subcommand)]
+    Function(FunctionProfileMethod),
+    #[clap(name = "callstack")]
+    #[clap(subcommand)]
+    Callstack(CallstackProfileMethod),
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FunctionProfileMethod {
     /// Naive, Halt -> Read PC -> Resume profiler
     #[clap(name = "naive")]
     Naive,
@@ -63,10 +77,192 @@ pub enum ProfileMethod {
     Pcsr,
 }
 
-impl std::fmt::Display for ProfileMethod {
+impl std::fmt::Display for FunctionProfileMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         let s = format!("{self:?}");
         write!(f, "{}", s.to_lowercase())
+    }
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CallstackProfileMethod {
+    /// Naive frame pointer, halt -> walk callstack using fp -> resume
+    NaiveFp,
+    /// Naive dwarf debug, halt -> walk callstack using debug info -> resume
+    NaiveDwarf,
+}
+
+impl std::fmt::Display for CallstackProfileMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let s = format!("{self:?}");
+        write!(f, "{}", s.to_lowercase())
+    }
+}
+
+pub fn function_profile(
+    method: &FunctionProfileMethod,
+    session: &mut Session,
+    line_info: bool,
+    duration: u64,
+    core: usize,
+    file_location: &Path,
+    limit: usize,
+) -> anyhow::Result<()> {
+    // The error returned from try_from cannot be converted directly to anyhow::Error unfortunately,
+    // due to a limitation in addr2line.
+    let symbols = Symbols::try_from(file_location).map_err(|e| {
+        anyhow!(
+            "Failed to read symbol data from {}: {}",
+            file_location.display(),
+            e
+        )
+    })?;
+
+    let start = Instant::now();
+    let mut reads = 0;
+    let mut samples: HashMap<u32, u64> = HashMap::with_capacity(256 * (duration as usize));
+    let duration = Duration::from_secs(duration);
+
+    match method {
+        FunctionProfileMethod::Naive => {
+            let mut core = session.core(core)?;
+            core.reset()?;
+            let pc_reg = core.program_counter();
+
+            loop {
+                core.halt(Duration::from_millis(10))?;
+                let pc: u32 = core.read_core_reg(pc_reg)?;
+                *samples.entry(pc).or_insert(1) += 1;
+                reads += 1;
+                core.run()?;
+                if start.elapsed() > duration {
+                    break;
+                }
+            }
+        }
+        FunctionProfileMethod::Pcsr => {
+            enable_tracing(&mut session.core(core)?)?;
+
+            let components = session.get_arm_components(DpAddress::Default)?;
+            let component = find_component(&components, PeripheralType::Dwt)?;
+            let interface = session.get_arm_interface()?;
+
+            let mut dwt = Dwt::new(interface, component);
+            dwt.enable()?;
+
+            while start.elapsed() <= duration {
+                let pc = dwt.read_pcsr()?;
+                *samples.entry(pc).or_insert(1) += 1;
+                reads += 1;
+            }
+        }
+        FunctionProfileMethod::Itm { clk, baud } => {
+            let sink = TraceSink::Swo(SwoConfig::new(*clk).set_baud(*baud));
+            session.setup_tracing(core, sink)?;
+
+            let components = session.get_arm_components(DpAddress::Default)?;
+            let component = find_component(&components, PeripheralType::Dwt)?;
+            let interface = session.get_arm_interface()?;
+            let mut dwt = Dwt::new(interface, component);
+            dwt.enable_pc_sampling()?;
+
+            let decoder = itm::Decoder::new(
+                session.swo_reader()?,
+                itm::DecoderOptions { ignore_eof: true },
+            );
+
+            let iter = decoder.singles();
+
+            for packet in iter {
+                if let TracePacket::PCSample { pc: Some(pc) } = packet? {
+                    *samples.entry(pc).or_insert(1) += 1;
+                    reads += 1;
+                }
+                if start.elapsed() > duration {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut v = Vec::from_iter(samples);
+    // sort by frequency
+    v.sort_by(|&(_, a), &(_, b)| b.cmp(&a));
+
+    println!("Samples {reads}");
+
+    for (address, count) in v.into_iter().take(limit) {
+        let name = symbols
+            .get_name(address as u64)
+            .unwrap_or(format!("UNKNOWN - {address:08X}"));
+        if line_info {
+            let (file, num) = symbols
+                .get_location(address as u64)
+                .unwrap_or(("UNKNOWN", 0));
+            println!("{file}:{num}");
+        }
+        println!(
+            "{:>50} - {:.01}%",
+            name,
+            (count as f64 / reads as f64) * 100.0
+        );
+    }
+
+    Ok(())
+}
+
+pub fn callstack_profile(
+    method: &CallstackProfileMethod,
+    session: &mut Session,
+    line_info: bool,
+    duration: u64,
+    core: usize,
+    file_location: &Path,
+) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let mut samples: HashMap<u32, u64> = HashMap::with_capacity(256 * (duration as usize));
+    let duration = Duration::from_secs(duration);
+    let debug_info = DebugInfo::from_file(file_location)?;
+
+    match method {
+        CallstackProfileMethod::NaiveFp => todo!(),
+        CallstackProfileMethod::NaiveDwarf => {
+            let mut core = session.core(core)?;
+            //TODO: make resetting optional
+            // core.reset()?;
+
+            loop {
+                //TODO: make frequency configurable
+                std::thread::sleep(Duration::from_millis(1000));
+
+                core.halt(Duration::from_millis(10))?;
+                let debug_registers = DebugRegisters::from_core(&mut core);
+                let exception_handler =
+                    probe_rs_debug::exception_handler_for_core(core.core_type());
+                let instruction_set = core.instruction_set()?;
+                let stack_frames = debug_info.unwind(
+                    &mut core,
+                    debug_registers,
+                    exception_handler.as_ref(),
+                    Some(instruction_set),
+                )?;
+                core.run()?;
+
+                let fn_names: Vec<_> = stack_frames
+                    .into_iter()
+                    .map(|frame| frame.function_name)
+                    .collect();
+
+                dbg!(fn_names);
+
+                if start.elapsed() > duration {
+                    break;
+                }
+            }
+
+            Ok(())
+        }
     }
 }
 
@@ -87,16 +283,6 @@ impl ProfileCmd {
 
         let file_location = self.run.shared_options.path.as_path();
 
-        // The error returned from try_from cannot be converted directly to anyhow::Error unfortunately,
-        // due to a limitation in addr2line.
-        let symbols = Symbols::try_from(file_location).map_err(|e| {
-            anyhow!(
-                "Failed to read symbol data from {}: {}",
-                file_location.display(),
-                e
-            )
-        })?;
-
         if self.flash {
             run_flash_download(
                 &mut session,
@@ -107,99 +293,27 @@ impl ProfileCmd {
             )?;
         }
 
-        let start = Instant::now();
-        let mut reads = 0;
-        let mut samples: HashMap<u32, u64> = HashMap::with_capacity(256 * (self.duration as usize));
-        let duration = Duration::from_secs(self.duration);
         info!("Profiling...");
 
-        match self.method {
-            ProfileMethod::Naive => {
-                let mut core = session.core(self.core)?;
-                info!("Attached to Core {}", self.core);
-                core.reset()?;
-                let pc_reg = core.program_counter();
-
-                loop {
-                    core.halt(Duration::from_millis(10))?;
-                    let pc: u32 = core.read_core_reg(pc_reg)?;
-                    *samples.entry(pc).or_insert(1) += 1;
-                    reads += 1;
-                    core.run()?;
-                    if start.elapsed() > duration {
-                        break;
-                    }
-                }
-            }
-            ProfileMethod::Pcsr => {
-                enable_tracing(&mut session.core(self.core)?)?;
-
-                let components = session.get_arm_components(DpAddress::Default)?;
-                let component = find_component(&components, PeripheralType::Dwt)?;
-                let interface = session.get_arm_interface()?;
-
-                let mut dwt = Dwt::new(interface, component);
-                dwt.enable()?;
-
-                while start.elapsed() <= duration {
-                    let pc = dwt.read_pcsr()?;
-                    *samples.entry(pc).or_insert(1) += 1;
-                    reads += 1;
-                }
-            }
-            ProfileMethod::Itm { clk, baud } => {
-                let sink = TraceSink::Swo(SwoConfig::new(clk).set_baud(baud));
-                session.setup_tracing(self.core, sink)?;
-
-                let components = session.get_arm_components(DpAddress::Default)?;
-                let component = find_component(&components, PeripheralType::Dwt)?;
-                let interface = session.get_arm_interface()?;
-                let mut dwt = Dwt::new(interface, component);
-                dwt.enable_pc_sampling()?;
-
-                let decoder = itm::Decoder::new(
-                    session.swo_reader()?,
-                    itm::DecoderOptions { ignore_eof: true },
-                );
-
-                let iter = decoder.singles();
-
-                for packet in iter {
-                    if let TracePacket::PCSample { pc: Some(pc) } = packet? {
-                        *samples.entry(pc).or_insert(1) += 1;
-                        reads += 1;
-                    }
-                    if start.elapsed() > duration {
-                        break;
-                    }
-                }
-            }
+        match self.profile_type {
+            ProfileType::Function(method) => function_profile(
+                &method,
+                &mut session,
+                self.line_info,
+                self.duration,
+                self.core,
+                file_location,
+                self.limit,
+            ),
+            ProfileType::Callstack(method) => callstack_profile(
+                &method,
+                &mut session,
+                self.line_info,
+                self.duration,
+                self.core,
+                file_location,
+            ),
         }
-
-        let mut v = Vec::from_iter(samples);
-        // sort by frequency
-        v.sort_by(|&(_, a), &(_, b)| b.cmp(&a));
-
-        println!("Samples {reads}");
-
-        for (address, count) in v.into_iter().take(self.limit) {
-            let name = symbols
-                .get_name(address as u64)
-                .unwrap_or(format!("UNKNOWN - {address:08X}"));
-            if self.line_info {
-                let (file, num) = symbols
-                    .get_location(address as u64)
-                    .unwrap_or(("UNKNOWN", 0));
-                println!("{file}:{num}");
-            }
-            println!(
-                "{:>50} - {:.01}%",
-                name,
-                (count as f64 / reads as f64) * 100.0
-            );
-        }
-
-        Ok(())
     }
 }
 
