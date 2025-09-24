@@ -2,9 +2,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use addr2line::Loader;
 use anyhow::anyhow;
+use fxprof_processed_profile as fxprofpp;
 use itm::TracePacket;
 use probe_rs::Session;
 use probe_rs::config::Registry;
@@ -100,7 +102,7 @@ impl std::fmt::Display for CallstackProfileMethod {
     }
 }
 
-pub fn function_profile(
+fn function_profile(
     method: &FunctionProfileMethod,
     session: &mut Session,
     line_info: bool,
@@ -212,7 +214,58 @@ pub fn function_profile(
     Ok(())
 }
 
-pub fn callstack_profile(
+struct StackFrameInfo;
+
+struct CallstackSample {
+    callstack: Vec<StackFrameInfo>,
+    // time since profiling started
+    time: Duration,
+}
+
+fn make_fx_profile(
+    callstacks: &Vec<Vec<CallstackSample>>,
+    start_time: &SystemTime,
+    sampling_interval: &Duration,
+) -> fxprofpp::Profile {
+    let start_timestamp = (*start_time).into();
+
+    let mut profile = fxprofpp::Profile::new(
+        // TODO: give this a better name
+        "probe-rs profiled application",
+        start_timestamp,
+        (*sampling_interval).into(),
+    );
+
+    let process = profile.add_process(
+        "process",
+        0,
+        fxprofpp::Timestamp::from_nanos_since_reference(0),
+    );
+
+    for (i_core, core_callstacks) in callstacks.iter().enumerate() {
+        //TODO: check whether is_main should be set or not
+        let mut thread = profile.add_thread(
+            process,
+            i_core as u32,
+            fxprofpp::Timestamp::from_nanos_since_reference(0),
+            true,
+        );
+        let stack = todo!();
+        for sample in core_callstacks {
+            profile.add_sample(
+                thread,
+                fxprofpp::Timestamp::from_nanos_since_reference(sample.time.as_nanos() as u64),
+                stack,
+                fxprofpp::CpuDelta::ZERO,
+                1,
+            );
+        }
+    }
+
+    profile
+}
+
+fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
     line_info: bool,
@@ -246,6 +299,7 @@ pub fn callstack_profile(
                     debug_registers,
                     exception_handler.as_ref(),
                     Some(instruction_set),
+                    usize::MAX,
                 )?;
                 core.run()?;
 
