@@ -6,8 +6,11 @@ use std::time::SystemTime;
 
 use addr2line::Loader;
 use anyhow::anyhow;
+use debugid;
 use fxprof_processed_profile as fxprofpp;
 use itm::TracePacket;
+use object;
+use object::Object;
 use probe_rs::Session;
 use probe_rs::config::Registry;
 use probe_rs::{
@@ -21,6 +24,7 @@ use probe_rs::{
 };
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
+use uuid::Uuid;
 
 use crate::util::flash::{build_loader, run_flash_download};
 use tracing::info;
@@ -214,24 +218,87 @@ fn function_profile(
     Ok(())
 }
 
-struct StackFrameInfo;
+#[derive(Clone, Copy, Debug)]
+struct StackFrameInfo {
+    pc: u64,
+}
 
+impl From<&StackFrameInfo> for fxprofpp::FrameInfo {
+    fn from(value: &StackFrameInfo) -> Self {
+        fxprofpp::FrameInfo {
+            frame: fxprofpp::Frame::InstructionPointer(value.pc),
+            category_pair: fxprofpp::CategoryHandle::OTHER.into(),
+            flags: fxprofpp::FrameFlags::empty(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 struct CallstackSample {
+    // element 0 is root node
+    // element 1 is first callee, etc
     callstack: Vec<StackFrameInfo>,
     // time since profiling started
     time: Duration,
+}
+
+/// Algorithm from samply-symbols
+fn debugid_from_identifier(identifier: &[u8], little_endian: bool) -> debugid::DebugId {
+    // Truncate or zero-pad the indentifier to 16 bytes
+    let mut d = [0u8; 16];
+    let shared_len = identifier.len().min(d.len());
+    d[0..shared_len].copy_from_slice(&identifier[0..shared_len]);
+
+    // Pretend that the build ID was stored as a UUID with (u32, u16, u16) fields inside
+    // the file. Parse those fields in the endianness of the file. Then use
+    // Uuid::from_fields to serialize them as big endian.
+    // For ELF build IDs this is a bit silly, because ELF build IDs aren't actually
+    // field-based UUIDs, but this is what the tools in the breakpad and
+    // sentry/symbolic universe do, so we do the same for compatibility with those
+    // tools.
+    let (d1, d2, d3) = if little_endian {
+        (
+            u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
+            u16::from_le_bytes([d[4], d[5]]),
+            u16::from_le_bytes([d[6], d[7]]),
+        )
+    } else {
+        (
+            u32::from_be_bytes([d[0], d[1], d[2], d[3]]),
+            u16::from_be_bytes([d[4], d[5]]),
+            u16::from_be_bytes([d[6], d[7]]),
+        )
+    };
+    let uuid = Uuid::from_fields(d1, d2, d3, d[8..16].try_into().unwrap());
+    debugid::DebugId::from_uuid(uuid)
 }
 
 fn make_fx_profile(
     callstacks: &Vec<Vec<CallstackSample>>,
     start_time: &SystemTime,
     sampling_interval: &Duration,
+    binary_path: &std::path::Path,
 ) -> fxprofpp::Profile {
     let start_timestamp = (*start_time).into();
 
+    // TODO: propagate errors
+    let binary_name: String = binary_path
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let abs_binary_path: String = binary_path
+        .canonicalize()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
     let mut profile = fxprofpp::Profile::new(
         // TODO: give this a better name
-        "probe-rs profiled application",
+        &binary_name,
         start_timestamp,
         (*sampling_interval).into(),
     );
@@ -242,6 +309,29 @@ fn make_fx_profile(
         fxprofpp::Timestamp::from_nanos_since_reference(0),
     );
 
+    // let elf_bytes = std::fs::read(binary_path).unwrap();
+    // let elf = object::File::parse(&*elf_bytes).unwrap();
+    // let build_id = elf
+    //     .build_id()
+    //     .expect("Binary should be ELF format")
+    //     .expect("ELF should have build ID");
+    // let debug_id = debugid_from_identifier(build_id, elf.is_little_endian());
+    let debug_id = debugid::DebugId::nil();
+
+    let library_info = fxprofpp::LibraryInfo {
+        name: binary_name.clone(),
+        debug_name: binary_name.clone(),
+        path: abs_binary_path.clone(),
+        debug_path: abs_binary_path.clone(),
+        debug_id,
+        code_id: None,
+        arch: None,
+        symbol_table: None,
+    };
+    let library = profile.add_lib(library_info);
+
+    // profile.add_lib_mapping(process, library, todo!(), todo!(), todo!());
+
     for (i_core, core_callstacks) in callstacks.iter().enumerate() {
         //TODO: check whether is_main should be set or not
         let mut thread = profile.add_thread(
@@ -250,8 +340,9 @@ fn make_fx_profile(
             fxprofpp::Timestamp::from_nanos_since_reference(0),
             true,
         );
-        let stack = todo!();
         for sample in core_callstacks {
+            let stack_frames = sample.callstack.iter().map(|frame| frame.into());
+            let stack = profile.intern_stack_frames(thread, stack_frames);
             profile.add_sample(
                 thread,
                 fxprofpp::Timestamp::from_nanos_since_reference(sample.time.as_nanos() as u64),
@@ -265,30 +356,48 @@ fn make_fx_profile(
     profile
 }
 
+fn save_fx_profile(
+    profile: &fxprofpp::Profile,
+    output_dir: &std::path::PathBuf,
+    profile_name: &str,
+) -> std::io::Result<()> {
+    let output_path = output_dir.join(profile_name).with_extension("json.gz");
+    let output_file = std::fs::File::create(output_path)?;
+
+    const GZIP_COMPRESSION_LEVEL: u32 = 2;
+
+    let writer = std::io::BufWriter::new(output_file);
+    let builder = flate2::GzBuilder::new().filename(profile_name.as_bytes());
+    let gz = builder.write(writer, flate2::Compression::new(GZIP_COMPRESSION_LEVEL));
+    let gz = std::io::BufWriter::new(gz);
+    serde_json::to_writer(gz, &profile)?;
+    Ok(())
+}
+
 fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
     line_info: bool,
     duration: u64,
-    core: usize,
+    core_idx: usize,
     file_location: &Path,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
-    let mut samples: HashMap<u32, u64> = HashMap::with_capacity(256 * (duration as usize));
+    let start_sys_time = std::time::SystemTime::now();
+    let mut samples: Vec<CallstackSample> = Vec::new();
     let duration = Duration::from_secs(duration);
     let debug_info = DebugInfo::from_file(file_location)?;
+
+    let sampling_interval = Duration::from_millis(1000);
 
     match method {
         CallstackProfileMethod::NaiveFp => todo!(),
         CallstackProfileMethod::NaiveDwarf => {
-            let mut core = session.core(core)?;
+            let mut core = session.core(core_idx)?;
             //TODO: make resetting optional
             // core.reset()?;
 
             loop {
-                //TODO: make frequency configurable
-                std::thread::sleep(Duration::from_millis(1000));
-
                 core.halt(Duration::from_millis(10))?;
                 let debug_registers = DebugRegisters::from_core(&mut core);
                 let exception_handler =
@@ -303,17 +412,45 @@ fn callstack_profile(
                 )?;
                 core.run()?;
 
-                let fn_names: Vec<_> = stack_frames
+                // reverse callstack so root node is first
+                let callstack: Vec<StackFrameInfo> = (&stack_frames)
                     .into_iter()
-                    .map(|frame| frame.function_name)
+                    .rev()
+                    .map(|frame| StackFrameInfo {
+                        pc: frame
+                            .pc
+                            .try_into()
+                            .expect("PC should not be larger than 64 bits"),
+                    })
                     .collect();
+                let sample = CallstackSample {
+                    callstack,
+                    time: std::time::Instant::now().duration_since(start),
+                };
 
-                dbg!(fn_names);
+                samples.push(sample);
 
                 if start.elapsed() > duration {
                     break;
                 }
+
+                // sleep a bit before next sample
+                //TODO: make frequency configurable
+                //TODO: subtract duration spent processing from sleep time
+                std::thread::sleep(sampling_interval);
+
             }
+
+            let profile = make_fx_profile(
+                &vec![samples],
+                &start_sys_time,
+                &sampling_interval,
+                file_location,
+            );
+
+            let output_dir = std::env::current_dir()?;
+            let profile_name = "probe-rs-profile";
+            save_fx_profile(&profile, &output_dir, profile_name)?;
 
             Ok(())
         }

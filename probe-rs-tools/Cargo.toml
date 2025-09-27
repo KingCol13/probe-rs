@@ -127,6 +127,10 @@ sha2 = "0.10"
 # gdb server
 gdbstub = "0.7.6"
 fxprof-processed-profile = "0.8.1"
+object = { version = "0.37.3", default-features = false, features = ["elf", "std"] }
+debugid = "0.8.0"
+uuid = { version = "1.18.1", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.2", default-features = false, features = ["zlib-rs"] }
 
 [build-dependencies]
 git-version = "0.3"
