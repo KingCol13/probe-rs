@@ -3080,6 +3080,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored 3.0.0",
+ "debugid",
  "defmt-decoder",
  "directories",
  "docsplay",
@@ -3087,6 +3088,7 @@ dependencies = [
  "espflash",
  "fastrand",
  "figment",
+ "flate2",
  "futures-util",
  "fxprof-processed-profile",
  "gdbstub",
@@ -3101,6 +3103,7 @@ dependencies = [
  "libtest-mimic",
  "linkme",
  "num-traits",
+ "object 0.37.3",
  "parking_lot",
  "parse_int",
  "postcard",
@@ -3139,6 +3142,7 @@ dependencies = [
  "tracing-subscriber",
  "typed-path",
  "urlencoding",
+ "uuid",
  "zip",
 ]
 
