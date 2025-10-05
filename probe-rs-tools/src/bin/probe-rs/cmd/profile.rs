@@ -347,7 +347,7 @@ fn make_fx_profile(
 
     for (i_core, core_callstacks) in callstacks.iter().enumerate() {
         //TODO: check whether is_main should be set or not
-        let mut thread = profile.add_thread(
+        let thread = profile.add_thread(
             process,
             i_core as u32,
             fxprofpp::Timestamp::from_nanos_since_reference(0),
