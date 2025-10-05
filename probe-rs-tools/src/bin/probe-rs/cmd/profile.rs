@@ -11,6 +11,7 @@ use fxprof_processed_profile as fxprofpp;
 use itm::TracePacket;
 use object;
 use object::Object;
+use object::ObjectSegment;
 use probe_rs::Session;
 use probe_rs::config::Registry;
 use probe_rs::{
@@ -273,6 +274,17 @@ fn debugid_from_identifier(identifier: &[u8], little_endian: bool) -> debugid::D
     debugid::DebugId::from_uuid(uuid)
 }
 
+/// Get virtual memory address of the first segment in binary - i.e. mapping created by first ELF
+/// `LOAD` command.
+/// Returns None if there are no segments.
+fn get_base_address(
+    binary_path: &std::path::Path,
+) -> Option<u64> {
+    let data = std::fs::read(binary_path).unwrap();
+    let file = object::File::parse(&*data).unwrap();
+    file.segments().map(|s| s.address()).min()
+}
+
 fn make_fx_profile(
     callstacks: &Vec<Vec<CallstackSample>>,
     start_time: &SystemTime,
@@ -330,7 +342,8 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    // profile.add_lib_mapping(process, library, todo!(), todo!(), todo!());
+    let start_avma = get_base_address(binary_path).unwrap();
+    profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for (i_core, core_callstacks) in callstacks.iter().enumerate() {
         //TODO: check whether is_main should be set or not
