@@ -11,6 +11,7 @@ use fxprof_processed_profile as fxprofpp;
 use itm::TracePacket;
 use object;
 use object::Object;
+use object::ObjectSection;
 use object::ObjectSegment;
 use probe_rs::Session;
 use probe_rs::config::Registry;
@@ -274,15 +275,44 @@ fn debugid_from_identifier(identifier: &[u8], little_endian: bool) -> debugid::D
     debugid::DebugId::from_uuid(uuid)
 }
 
+/// Algorithm from samply-symbols
+fn debugid_from_text_first_page(text_first_page: &[u8], little_endian: bool) -> debugid::DebugId {
+    const UUID_SIZE: usize = 16;
+    const PAGE_SIZE: usize = 4096;
+    let mut hash = [0; UUID_SIZE];
+    for (i, byte) in text_first_page.iter().cloned().take(PAGE_SIZE).enumerate() {
+        hash[i % UUID_SIZE] ^= byte;
+    }
+    debugid_from_identifier(&hash, little_endian)
+}
+
+fn get_elf_debugid(elf: &object::File) -> debugid::DebugId {
+    if let Some(build_id) = elf.build_id().expect("Valid ELF file") {
+        debugid_from_identifier(build_id, elf.is_little_endian())
+    } else {
+        // We were not able to locate a build ID, so fall back to creating a synthetic
+        // identifier from a hash of the first page of the ".text" (program code) section.
+        if let Some(section) = elf.section_by_name(".text") {
+            let data_len = section.size().min(4096);
+            if let Some(first_page_data) = section
+                .data_range(section.address(), data_len)
+                .expect("Valid ELF file")
+            {
+                debugid_from_text_first_page(first_page_data, elf.is_little_endian())
+            } else {
+                panic!(".text section too short")
+            }
+        } else {
+            panic!("No .text section in ELF file")
+        }
+    }
+}
+
 /// Get virtual memory address of the first segment in binary - i.e. mapping created by first ELF
 /// `LOAD` command.
 /// Returns None if there are no segments.
-fn get_base_address(
-    binary_path: &std::path::Path,
-) -> Option<u64> {
-    let data = std::fs::read(binary_path).unwrap();
-    let file = object::File::parse(&*data).unwrap();
-    file.segments().map(|s| s.address()).min()
+fn get_base_address(elf: &object::File) -> Option<u64> {
+    elf.segments().map(|s| s.address()).min()
 }
 
 fn make_fx_profile(
@@ -321,14 +351,9 @@ fn make_fx_profile(
         fxprofpp::Timestamp::from_nanos_since_reference(0),
     );
 
-    // let elf_bytes = std::fs::read(binary_path).unwrap();
-    // let elf = object::File::parse(&*elf_bytes).unwrap();
-    // let build_id = elf
-    //     .build_id()
-    //     .expect("Binary should be ELF format")
-    //     .expect("ELF should have build ID");
-    // let debug_id = debugid_from_identifier(build_id, elf.is_little_endian());
-    let debug_id = debugid::DebugId::nil();
+    let elf_bytes = std::fs::read(binary_path).unwrap();
+    let elf = object::File::parse(&*elf_bytes).unwrap();
+    let debug_id = get_elf_debugid(&elf);
 
     let library_info = fxprofpp::LibraryInfo {
         name: binary_name.clone(),
@@ -342,7 +367,7 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    let start_avma = get_base_address(binary_path).unwrap();
+    let start_avma = get_base_address(&elf).unwrap();
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for (i_core, core_callstacks) in callstacks.iter().enumerate() {
@@ -450,7 +475,6 @@ fn callstack_profile(
                 //TODO: make frequency configurable
                 //TODO: subtract duration spent processing from sleep time
                 std::thread::sleep(sampling_interval);
-
             }
 
             let profile = make_fx_profile(
