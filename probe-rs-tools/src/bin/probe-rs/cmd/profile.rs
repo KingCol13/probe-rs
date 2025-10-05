@@ -401,7 +401,7 @@ fn callstack_profile(
     let duration = Duration::from_secs(duration);
     let debug_info = DebugInfo::from_file(file_location)?;
 
-    let sampling_interval = Duration::from_millis(1000);
+    let sampling_interval = Duration::from_millis(500);
 
     match method {
         CallstackProfileMethod::NaiveFp => todo!(),
