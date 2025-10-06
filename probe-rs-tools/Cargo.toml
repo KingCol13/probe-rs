@@ -126,6 +126,8 @@ sha2 = "0.10"
 
 # gdb server
 gdbstub = "0.7.6"
+
+# profiling
 fxprof-processed-profile = "0.8.1"
 object = { version = "0.37.3", default-features = false, features = ["elf", "std"] }
 debugid = { version = "0.8.0", default-features = false }
