@@ -6,12 +6,10 @@ use std::time::SystemTime;
 
 use addr2line::Loader;
 use anyhow::anyhow;
-use debugid;
 use fxprof_processed_profile as fxprofpp;
 use itm::TracePacket;
 use object;
 use object::Object;
-use object::ObjectSection;
 use object::ObjectSegment;
 use probe_rs::Session;
 use probe_rs::config::Registry;
@@ -26,7 +24,8 @@ use probe_rs::{
 };
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
-use uuid::Uuid;
+use samply_debugid::code_id_for_object;
+use samply_debugid::debug_id_for_object;
 
 use crate::util::flash::{build_loader, run_flash_download};
 use tracing::info;
@@ -244,70 +243,6 @@ struct CallstackSample {
     time: Duration,
 }
 
-/// Algorithm from samply-symbols
-fn debugid_from_identifier(identifier: &[u8], little_endian: bool) -> debugid::DebugId {
-    // Truncate or zero-pad the indentifier to 16 bytes
-    let mut d = [0u8; 16];
-    let shared_len = identifier.len().min(d.len());
-    d[0..shared_len].copy_from_slice(&identifier[0..shared_len]);
-
-    // Pretend that the build ID was stored as a UUID with (u32, u16, u16) fields inside
-    // the file. Parse those fields in the endianness of the file. Then use
-    // Uuid::from_fields to serialize them as big endian.
-    // For ELF build IDs this is a bit silly, because ELF build IDs aren't actually
-    // field-based UUIDs, but this is what the tools in the breakpad and
-    // sentry/symbolic universe do, so we do the same for compatibility with those
-    // tools.
-    let (d1, d2, d3) = if little_endian {
-        (
-            u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
-            u16::from_le_bytes([d[4], d[5]]),
-            u16::from_le_bytes([d[6], d[7]]),
-        )
-    } else {
-        (
-            u32::from_be_bytes([d[0], d[1], d[2], d[3]]),
-            u16::from_be_bytes([d[4], d[5]]),
-            u16::from_be_bytes([d[6], d[7]]),
-        )
-    };
-    let uuid = Uuid::from_fields(d1, d2, d3, d[8..16].try_into().unwrap());
-    debugid::DebugId::from_uuid(uuid)
-}
-
-/// Algorithm from samply-symbols
-fn debugid_from_text_first_page(text_first_page: &[u8], little_endian: bool) -> debugid::DebugId {
-    const UUID_SIZE: usize = 16;
-    const PAGE_SIZE: usize = 4096;
-    let mut hash = [0; UUID_SIZE];
-    for (i, byte) in text_first_page.iter().cloned().take(PAGE_SIZE).enumerate() {
-        hash[i % UUID_SIZE] ^= byte;
-    }
-    debugid_from_identifier(&hash, little_endian)
-}
-
-fn get_elf_debugid(elf: &object::File) -> debugid::DebugId {
-    if let Some(build_id) = elf.build_id().expect("Valid ELF file") {
-        debugid_from_identifier(build_id, elf.is_little_endian())
-    } else {
-        // We were not able to locate a build ID, so fall back to creating a synthetic
-        // identifier from a hash of the first page of the ".text" (program code) section.
-        if let Some(section) = elf.section_by_name(".text") {
-            let data_len = section.size().min(4096);
-            if let Some(first_page_data) = section
-                .data_range(section.address(), data_len)
-                .expect("Valid ELF file")
-            {
-                debugid_from_text_first_page(first_page_data, elf.is_little_endian())
-            } else {
-                panic!(".text section too short")
-            }
-        } else {
-            panic!("No .text section in ELF file")
-        }
-    }
-}
-
 /// Get virtual memory address of the first segment in binary - i.e. mapping created by first ELF
 /// `LOAD` command.
 /// Returns None if there are no segments.
@@ -353,7 +288,8 @@ fn make_fx_profile(
 
     let elf_bytes = std::fs::read(binary_path).unwrap();
     let elf = object::File::parse(&*elf_bytes).unwrap();
-    let debug_id = get_elf_debugid(&elf);
+    let debug_id = debug_id_for_object(&elf).unwrap();
+    let code_id = code_id_for_object(&elf);
 
     let library_info = fxprofpp::LibraryInfo {
         name: binary_name.clone(),
@@ -361,7 +297,7 @@ fn make_fx_profile(
         path: abs_binary_path.clone(),
         debug_path: abs_binary_path.clone(),
         debug_id,
-        code_id: None,
+        code_id: code_id.map(|id| id.to_string()),
         arch: None,
         symbol_table: None,
     };
