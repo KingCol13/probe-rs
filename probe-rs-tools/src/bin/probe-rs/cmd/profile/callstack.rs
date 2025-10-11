@@ -52,11 +52,14 @@ struct StackFrameInfo {
     pc: u64,
 }
 
-impl From<&StackFrameInfo> for fxprofpp::FrameInfo {
-    fn from(value: &StackFrameInfo) -> Self {
+impl StackFrameInfo {
+    fn to_fxprofpp_with_category(
+        self: &StackFrameInfo,
+        category: fxprofpp::CategoryHandle,
+    ) -> fxprofpp::FrameInfo {
         fxprofpp::FrameInfo {
-            frame: fxprofpp::Frame::InstructionPointer(value.pc),
-            category_pair: fxprofpp::CategoryHandle::OTHER.into(),
+            frame: fxprofpp::Frame::InstructionPointer(self.pc),
+            category_pair: category.into(),
             flags: fxprofpp::FrameFlags::empty(),
         }
     }
@@ -123,6 +126,8 @@ fn make_fx_profile(
         (*sampling_interval).into(),
     );
 
+    let category = profile.add_category("raw", fxprofpp::CategoryColor::Yellow);
+
     let process = profile.add_process(
         "process",
         0,
@@ -158,7 +163,10 @@ fn make_fx_profile(
             false,
         );
         for sample in callstacks {
-            let stack_frames = sample.callstack.iter().map(|frame| frame.into());
+            let stack_frames = sample
+                .callstack
+                .iter()
+                .map(|frame| frame.to_fxprofpp_with_category(category));
             let stack = profile.intern_stack_frames(thread, stack_frames);
             profile.add_sample(
                 thread,
