@@ -190,7 +190,7 @@ pub(super) fn callstack_profile(
     let duration = Duration::from_secs(duration);
     let debug_info = DebugInfo::from_file(executable_location)?;
 
-    let sampling_interval = Duration::from_millis(500);
+    let sampling_interval = Duration::from_nanos(interval_ns);
 
     // TODO: make able to sample multiple cores
     let core_idx = *cores.first().unwrap();
