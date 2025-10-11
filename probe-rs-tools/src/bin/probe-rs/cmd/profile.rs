@@ -1,8 +1,6 @@
 mod callstack;
 mod flat;
 
-use callstack::CallstackProfileMethod;
-
 use probe_rs::config::Registry;
 use probe_rs::probe::list::Lister;
 
@@ -16,32 +14,23 @@ pub(crate) struct ProfileCmd {
     /// Flash the ELF before profiling
     #[clap(long)]
     flash: bool,
-    /// Print file and line info for each entry
-    #[clap(long)]
-    line_info: bool,
     /// Duration of profile in seconds.
     #[clap(long)]
     duration: u64, // Option<u64> If we could catch ctrl-c we can make this optional
-    /// Which core to profile
-    #[clap(long, default_value_t = 0)]
-    core: usize,
-    /// Limit the number of entries to output
-    #[clap(long, default_value_t = 25)]
-    limit: usize,
     /// Profile Method
     #[clap(subcommand)]
     profile_type: ProfileType,
 }
 
-#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 enum ProfileType {
+    /// Faster flat profiling that only records currently executing function
     #[clap(name = "flat")]
-    #[clap(subcommand)]
-    Flat(flat::FlatProfileMethod),
+    Flat(flat::FlatProfileArgs),
+    /// Slower callstack profiling that records the executing function and all callers
     #[clap(name = "callstack")]
-    #[clap(subcommand)]
-    Callstack(CallstackProfileMethod),
+    Callstack(callstack::CallstackProfileArgs),
 }
 
 impl ProfileCmd {
@@ -66,21 +55,21 @@ impl ProfileCmd {
         info!("Profiling...");
 
         match self.profile_type {
-            ProfileType::Flat(method) => flat::flat_profile(
-                &method,
+            ProfileType::Flat(flat_args) => flat::flat_profile(
+                &flat_args.method,
                 &mut session,
-                self.line_info,
+                flat_args.line_info,
                 self.duration,
-                self.core,
+                flat_args.core,
                 file_location,
-                self.limit,
+                flat_args.limit,
             ),
-            ProfileType::Callstack(method) => callstack::callstack_profile(
-                &method,
+            ProfileType::Callstack(callstack_args) => callstack::callstack_profile(
+                &callstack_args.method,
                 &mut session,
-                self.line_info,
                 self.duration,
-                self.core,
+                callstack_args.interval_ns,
+                &callstack_args.cores,
                 file_location,
             ),
         }
