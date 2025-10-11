@@ -71,6 +71,21 @@ struct CallstackSample {
     time: Duration,
 }
 
+#[derive(Clone, Debug)]
+struct CoreSamples {
+    core: usize,
+    callstacks: Vec<CallstackSample>,
+}
+
+impl CoreSamples {
+    fn new(core: usize) -> Self {
+        Self {
+            core,
+            callstacks: Vec::new(),
+        }
+    }
+}
+
 /// Get virtual memory address of the first segment in binary - i.e. mapping created by first ELF
 /// `LOAD` command.
 /// Returns None if there are no segments.
@@ -79,7 +94,7 @@ fn get_base_address(elf: &object::File) -> Option<u64> {
 }
 
 fn make_fx_profile(
-    callstacks: &Vec<Vec<CallstackSample>>,
+    core_callstacks: &[CoreSamples],
     start_time: &SystemTime,
     sampling_interval: &Duration,
     binary_path: &std::path::Path,
@@ -134,15 +149,15 @@ fn make_fx_profile(
     let start_avma = get_base_address(&elf).unwrap();
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
-    for (i_core, core_callstacks) in callstacks.iter().enumerate() {
+    for CoreSamples { core, callstacks } in core_callstacks.iter() {
         //TODO: check whether is_main should be set or not
         let thread = profile.add_thread(
             process,
-            i_core as u32,
+            *core as u32,
             fxprofpp::Timestamp::from_nanos_since_reference(0),
-            true,
+            false,
         );
-        for sample in core_callstacks {
+        for sample in callstacks {
             let stack_frames = sample.callstack.iter().map(|frame| frame.into());
             let stack = profile.intern_stack_frames(thread, stack_frames);
             profile.add_sample(
@@ -186,65 +201,70 @@ pub(super) fn callstack_profile(
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let start_sys_time = std::time::SystemTime::now();
-    let mut samples: Vec<CallstackSample> = Vec::new();
     let duration = Duration::from_secs(duration);
+    let sampling_interval = Duration::from_nanos(interval_ns);
     let debug_info = DebugInfo::from_file(executable_location)?;
 
-    let sampling_interval = Duration::from_nanos(interval_ns);
+    let available_cores: Vec<_> = session.list_cores().iter().map(|c| c.0).collect();
 
-    // TODO: make able to sample multiple cores
-    let core_idx = *cores.first().unwrap();
+    let cores = if cores.is_empty() {
+        &available_cores
+    } else {
+        cores
+    };
+
+    let mut samples: Vec<CoreSamples> = cores
+        .iter()
+        .map(|core_idx| CoreSamples::new(*core_idx))
+        .collect();
 
     match method {
         CallstackProfileMethod::NaiveDwarf => {
-            let mut core = session.core(core_idx)?;
-            //TODO: make resetting optional
-            // core.reset()?;
-
             loop {
-                core.halt(Duration::from_millis(10))?;
-                let debug_registers = DebugRegisters::from_core(&mut core);
-                let exception_handler =
-                    probe_rs_debug::exception_handler_for_core(core.core_type());
-                let instruction_set = core.instruction_set()?;
-                let stack_frames = debug_info.unwind(
-                    &mut core,
-                    debug_registers,
-                    exception_handler.as_ref(),
-                    Some(instruction_set),
-                )?;
-                core.run()?;
+                for core_sample in samples.iter_mut() {
+                    let mut core = session.core(core_sample.core)?;
+                    core.halt(Duration::from_millis(10))?;
+                    let debug_registers = DebugRegisters::from_core(&mut core);
+                    let exception_handler =
+                        probe_rs_debug::exception_handler_for_core(core.core_type());
+                    let instruction_set = core.instruction_set()?;
+                    let stack_frames = debug_info.unwind(
+                        &mut core,
+                        debug_registers,
+                        exception_handler.as_ref(),
+                        Some(instruction_set),
+                    )?;
+                    core.run()?;
 
-                // reverse callstack so root node is first
-                let callstack: Vec<StackFrameInfo> = (&stack_frames)
-                    .into_iter()
-                    .rev()
-                    .map(|frame| StackFrameInfo {
-                        pc: frame
-                            .pc
-                            .try_into()
-                            .expect("PC should not be larger than 64 bits"),
-                    })
-                    .collect();
-                let sample = CallstackSample {
-                    callstack,
-                    time: std::time::Instant::now().duration_since(start),
-                };
+                    // reverse callstack so root node is first
+                    let callstack: Vec<StackFrameInfo> = (&stack_frames)
+                        .into_iter()
+                        .rev()
+                        .map(|frame| StackFrameInfo {
+                            pc: frame
+                                .pc
+                                .try_into()
+                                .expect("PC should not be larger than 64 bits"),
+                        })
+                        .collect();
+                    let sample = CallstackSample {
+                        callstack,
+                        time: std::time::Instant::now().duration_since(start),
+                    };
 
-                samples.push(sample);
+                    core_sample.callstacks.push(sample);
+                }
 
                 if start.elapsed() > duration {
                     break;
                 }
 
                 // sleep a bit before next sample
-                //TODO: make frequency configurable
-                //TODO: subtract duration spent processing from sleep time
                 std::thread::sleep(sampling_interval);
             }
 
             let profile = make_fx_profile(
-                &vec![samples],
+                &samples,
                 &start_sys_time,
                 &sampling_interval,
                 executable_location,
