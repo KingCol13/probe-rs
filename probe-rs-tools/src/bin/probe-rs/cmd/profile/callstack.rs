@@ -65,6 +65,7 @@ impl StackFrameInfo {
     }
 }
 
+/// A single sample containing a callstack and a time
 #[derive(Clone, Debug)]
 struct CallstackSample {
     // element 0 is root node
@@ -74,6 +75,8 @@ struct CallstackSample {
     time: Duration,
 }
 
+/// All callstacks collected for a given core, for interfacing different sample collection methods
+/// with different output formats
 #[derive(Clone, Debug)]
 struct CoreSamples {
     core: usize,
