@@ -13,13 +13,31 @@ use probe_rs::Session;
 use samply_debugid::code_id_for_object;
 use samply_debugid::debug_id_for_object;
 
+#[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CallstackProfileArgs {
+    #[clap(subcommand)]
+    pub(crate) method: CallstackProfileMethod,
+    /// Target interval between samples in ns
+    #[clap(long, default_value_t = 500_000_000)]
+    pub(crate) interval_ns: u64,
+    /// Comma separated list of cores to profile, numbered from 0. If empty all cores will be
+    /// profiled
+    #[clap(long, value_delimiter = ',')]
+    pub(crate) cores: Vec<usize>,
+    /// Output format
+    #[clap(long, value_enum, default_value_t = OutputFormat::FirefoxProfiler)]
+    pub(crate) output_format: OutputFormat,
+}
+
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub(crate) enum CallstackProfileMethod {
-    /// Naive frame pointer, halt -> walk callstack using fp -> resume
-    NaiveFp,
     /// Naive dwarf debug, halt -> walk callstack using debug info -> resume
     NaiveDwarf,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OutputFormat {
+    FirefoxProfiler,
 }
 
 impl std::fmt::Display for CallstackProfileMethod {
@@ -161,21 +179,23 @@ fn save_fx_profile(
 pub(super) fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
-    line_info: bool,
     duration: u64,
-    core_idx: usize,
-    file_location: &Path,
+    interval_ns: u64,
+    cores: &[usize],
+    executable_location: &Path,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     let start_sys_time = std::time::SystemTime::now();
     let mut samples: Vec<CallstackSample> = Vec::new();
     let duration = Duration::from_secs(duration);
-    let debug_info = DebugInfo::from_file(file_location)?;
+    let debug_info = DebugInfo::from_file(executable_location)?;
 
     let sampling_interval = Duration::from_millis(500);
 
+    // TODO: make able to sample multiple cores
+    let core_idx = *cores.first().unwrap();
+
     match method {
-        CallstackProfileMethod::NaiveFp => todo!(),
         CallstackProfileMethod::NaiveDwarf => {
             let mut core = session.core(core_idx)?;
             //TODO: make resetting optional
@@ -227,7 +247,7 @@ pub(super) fn callstack_profile(
                 &vec![samples],
                 &start_sys_time,
                 &sampling_interval,
-                file_location,
+                executable_location,
             );
 
             let output_dir = std::env::current_dir()?;
