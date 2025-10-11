@@ -15,6 +15,21 @@ use addr2line::Loader;
 use anyhow::anyhow;
 use itm::TracePacket;
 
+#[derive(clap::Args, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FlatProfileArgs {
+    #[clap(subcommand)]
+    pub(crate) method: FlatProfileMethod,
+    /// Print file and line info for each entry
+    #[clap(long)]
+    pub(crate) line_info: bool,
+    /// Which core to profile
+    #[clap(long, default_value_t = 0)]
+    pub(crate) core: usize,
+    /// Limit the number of entries to output
+    #[clap(long, default_value_t = 25)]
+    pub(crate) limit: usize,
+}
+
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) enum FlatProfileMethod {
