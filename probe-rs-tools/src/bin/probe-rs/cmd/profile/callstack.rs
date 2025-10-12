@@ -99,27 +99,44 @@ fn get_base_address(elf: &object::File) -> Option<u64> {
     elf.segments().map(|s| s.address()).min()
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MakeFxProfileError {
+    #[error("Could not canonicalize ELF file path")]
+    Canonicalize(#[source] std::io::Error),
+    #[error("Invalid UTF-8 in ELF absolute file path")]
+    InvalidUtf8,
+    #[error("File name not found for ELF file")]
+    NoFileStem,
+    #[error("Could not read ELF file")]
+    ReadElf(#[source] std::io::Error),
+    #[error("Could not parse ELF file")]
+    ParseElf(#[source] object::Error),
+    #[error("Could not generate debug ID for ELF")]
+    DebugId,
+    #[error("The ELF file does not contain any segments")]
+    NoElfSegments,
+}
+
 fn make_fx_profile(
     core_callstacks: &[CoreSamples],
     start_time: &SystemTime,
     sampling_interval: &Duration,
     binary_path: &std::path::Path,
-) -> fxprofpp::Profile {
+) -> Result<fxprofpp::Profile, MakeFxProfileError> {
     let start_timestamp = (*start_time).into();
-
-    // TODO: propagate errors
-    let binary_name: String = binary_path
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
 
     let abs_binary_path: String = binary_path
         .canonicalize()
-        .unwrap()
+        .map_err(|e| MakeFxProfileError::Canonicalize(e))?
         .to_str()
-        .unwrap()
+        .ok_or(MakeFxProfileError::InvalidUtf8)?
+        .to_owned();
+
+    let binary_name: String = binary_path
+        .file_stem()
+        .ok_or(MakeFxProfileError::NoFileStem)?
+        .to_str()
+        .expect("Abs path converted to UTF-8 so file stem should too")
         .to_owned();
 
     let mut profile = fxprofpp::Profile::new(
@@ -137,9 +154,9 @@ fn make_fx_profile(
         fxprofpp::Timestamp::from_nanos_since_reference(0),
     );
 
-    let elf_bytes = std::fs::read(binary_path).unwrap();
-    let elf = object::File::parse(&*elf_bytes).unwrap();
-    let debug_id = debug_id_for_object(&elf).unwrap();
+    let elf_bytes = std::fs::read(binary_path).map_err(|e| MakeFxProfileError::ReadElf(e))?;
+    let elf = object::File::parse(&*elf_bytes).map_err(|e| MakeFxProfileError::ParseElf(e))?;
+    let debug_id = debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
     let code_id = code_id_for_object(&elf);
 
     let library_info = fxprofpp::LibraryInfo {
@@ -154,7 +171,7 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    let start_avma = get_base_address(&elf).unwrap();
+    let start_avma = get_base_address(&elf).ok_or(MakeFxProfileError::NoElfSegments)?;
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for CoreSamples { core, callstacks } in core_callstacks.iter() {
@@ -181,7 +198,7 @@ fn make_fx_profile(
         }
     }
 
-    profile
+    Ok(profile)
 }
 
 fn save_fx_profile(
@@ -279,7 +296,7 @@ pub(super) fn callstack_profile(
                 &start_sys_time,
                 &sampling_interval,
                 executable_location,
-            );
+            )?;
 
             let output_dir = std::env::current_dir()?;
             let profile_name = "probe-rs-profile";
