@@ -7,11 +7,8 @@ use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
 
 use fxprof_processed_profile as fxprofpp;
-use object::Object;
-use object::ObjectSegment;
 use probe_rs::Session;
-use samply_debugid::code_id_for_object;
-use samply_debugid::debug_id_for_object;
+use samply_object;
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CallstackProfileArgs {
@@ -92,13 +89,6 @@ impl CoreSamples {
     }
 }
 
-/// Get virtual memory address of the first segment in binary - i.e. mapping created by first ELF
-/// `LOAD` command.
-/// Returns None if there are no segments.
-fn get_base_address(elf: &object::File) -> Option<u64> {
-    elf.segments().map(|s| s.address()).min()
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum MakeFxProfileError {
     #[error("Could not canonicalize ELF file path")]
@@ -113,8 +103,6 @@ pub enum MakeFxProfileError {
     ParseElf(#[source] object::Error),
     #[error("Could not generate debug ID for ELF")]
     DebugId,
-    #[error("The ELF file does not contain any segments")]
-    NoElfSegments,
 }
 
 fn make_fx_profile(
@@ -156,8 +144,8 @@ fn make_fx_profile(
 
     let elf_bytes = std::fs::read(binary_path).map_err(|e| MakeFxProfileError::ReadElf(e))?;
     let elf = object::File::parse(&*elf_bytes).map_err(|e| MakeFxProfileError::ParseElf(e))?;
-    let debug_id = debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
-    let code_id = code_id_for_object(&elf);
+    let debug_id = samply_object::debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
+    let code_id = samply_object::code_id_for_object(&elf);
 
     let library_info = fxprofpp::LibraryInfo {
         name: binary_name.clone(),
@@ -171,7 +159,7 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    let start_avma = get_base_address(&elf).ok_or(MakeFxProfileError::NoElfSegments)?;
+    let start_avma = samply_object::relative_address_base(&elf);
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for CoreSamples { core, callstacks } in core_callstacks.iter() {

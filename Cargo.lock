@@ -3142,7 +3142,7 @@ dependencies = [
  "regex",
  "rustls",
  "rustyline",
- "samply-debugid",
+ "samply-object",
  "sanitize-filename",
  "schemafy",
  "scroll",
@@ -3633,7 +3633,16 @@ name = "samply-debugid"
 version = "0.1.0"
 dependencies = [
  "debugid",
+ "uuid",
+]
+
+[[package]]
+name = "samply-object"
+version = "0.1.0"
+dependencies = [
+ "debugid",
  "object 0.37.3",
+ "samply-debugid",
  "uuid",
 ]
 
