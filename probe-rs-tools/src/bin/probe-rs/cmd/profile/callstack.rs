@@ -8,7 +8,7 @@ use probe_rs_debug::DebugRegisters;
 
 use fxprof_processed_profile as fxprofpp;
 use probe_rs::Session;
-use samply_object::{code_id_for_object, debug_id_for_object, relative_address_base};
+use samply_object;
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CallstackProfileArgs {
@@ -144,8 +144,8 @@ fn make_fx_profile(
 
     let elf_bytes = std::fs::read(binary_path).map_err(|e| MakeFxProfileError::ReadElf(e))?;
     let elf = object::File::parse(&*elf_bytes).map_err(|e| MakeFxProfileError::ParseElf(e))?;
-    let debug_id = debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
-    let code_id = code_id_for_object(&elf);
+    let debug_id = samply_object::debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
+    let code_id = samply_object::code_id_for_object(&elf);
 
     let library_info = fxprofpp::LibraryInfo {
         name: binary_name.clone(),
@@ -159,7 +159,7 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    let start_avma = relative_address_base(&elf);
+    let start_avma = samply_object::relative_address_base(&elf);
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for CoreSamples { core, callstacks } in core_callstacks.iter() {
