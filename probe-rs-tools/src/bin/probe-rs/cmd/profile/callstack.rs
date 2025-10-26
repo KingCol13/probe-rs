@@ -3,6 +3,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use probe_rs::MemoryInterface;
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
 
@@ -30,6 +31,7 @@ pub(crate) struct CallstackProfileArgs {
 pub(crate) enum CallstackProfileMethod {
     /// Naive dwarf debug, halt -> walk callstack using debug info -> resume
     NaiveDwarf,
+    NaiveFramePointer,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
@@ -97,8 +99,6 @@ pub enum MakeFxProfileError {
     InvalidUtf8,
     #[error("File name not found for ELF file")]
     NoFileStem,
-    #[error("Could not read ELF file")]
-    ReadElf(#[source] std::io::Error),
     #[error("Could not parse ELF file")]
     ParseElf(#[source] object::Error),
     #[error("Could not generate debug ID for ELF")]
@@ -110,6 +110,7 @@ fn make_fx_profile(
     start_time: &SystemTime,
     sampling_interval: &Duration,
     binary_path: &std::path::Path,
+    elf_bytes: &[u8],
 ) -> Result<fxprofpp::Profile, MakeFxProfileError> {
     let start_timestamp = (*start_time).into();
 
@@ -142,7 +143,6 @@ fn make_fx_profile(
         fxprofpp::Timestamp::from_nanos_since_reference(0),
     );
 
-    let elf_bytes = std::fs::read(binary_path).map_err(|e| MakeFxProfileError::ReadElf(e))?;
     let elf = object::File::parse(&*elf_bytes).map_err(|e| MakeFxProfileError::ParseElf(e))?;
     let debug_id = samply_object::debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
     let code_id = samply_object::code_id_for_object(&elf);
@@ -215,11 +215,11 @@ pub(super) fn callstack_profile(
     cores: &[usize],
     executable_location: &Path,
 ) -> anyhow::Result<()> {
-    let start = Instant::now();
-    let start_sys_time = std::time::SystemTime::now();
     let duration = Duration::from_secs(duration);
     let sampling_interval = Duration::from_nanos(interval_ns);
-    let debug_info = DebugInfo::from_file(executable_location)?;
+
+    let elf_bytes = std::fs::read(executable_location)?;
+    let debug_info = DebugInfo::from_raw(&elf_bytes)?;
 
     let available_cores: Vec<_> = session.list_cores().iter().map(|c| c.0).collect();
 
@@ -234,64 +234,108 @@ pub(super) fn callstack_profile(
         .map(|core_idx| CoreSamples::new(*core_idx))
         .collect();
 
-    match method {
-        CallstackProfileMethod::NaiveDwarf => {
-            loop {
-                for core_sample in samples.iter_mut() {
-                    let mut core = session.core(core_sample.core)?;
-                    core.halt(Duration::from_millis(10))?;
-                    let debug_registers = DebugRegisters::from_core(&mut core);
-                    let exception_handler =
-                        probe_rs_debug::exception_handler_for_core(core.core_type());
-                    let instruction_set = core.instruction_set()?;
-                    let stack_frames = debug_info.unwind(
-                        &mut core,
-                        debug_registers,
-                        exception_handler.as_ref(),
-                        Some(instruction_set),
-                        usize::MAX,
-                    )?;
-                    core.run()?;
+    let start = Instant::now();
+    let start_sys_time = std::time::SystemTime::now();
 
-                    // reverse callstack so root node is first
-                    let callstack: Vec<StackFrameInfo> = (&stack_frames)
-                        .into_iter()
-                        .rev()
-                        .map(|frame| StackFrameInfo {
-                            pc: frame
-                                .pc
-                                .try_into()
-                                .expect("PC should not be larger than 64 bits"),
-                        })
-                        .collect();
-                    let sample = CallstackSample {
-                        callstack,
-                        time: std::time::Instant::now().duration_since(start),
-                    };
+    loop {
+        // TODO: all cores should be stopped simultaneously before samples are collected for more
+        // accurate results
+        for core_sample in samples.iter_mut() {
+            let mut core = session.core(core_sample.core)?;
 
-                    core_sample.callstacks.push(sample);
-                }
+            // collect sample
+            core.halt(Duration::from_millis(10))?;
+            let callstack = match method {
+                CallstackProfileMethod::NaiveDwarf => dwarf_unwind(&mut core, &debug_info),
+                CallstackProfileMethod::NaiveFramePointer => frame_pointer_stack_walk(&mut core),
+            };
+            core.run()?;
 
-                if start.elapsed() > duration {
-                    break;
-                }
+            let sample = CallstackSample {
+                callstack,
+                time: std::time::Instant::now().duration_since(start),
+            };
 
-                // sleep a bit before next sample
-                std::thread::sleep(sampling_interval);
-            }
-
-            let profile = make_fx_profile(
-                &samples,
-                &start_sys_time,
-                &sampling_interval,
-                executable_location,
-            )?;
-
-            let output_dir = std::env::current_dir()?;
-            let profile_name = "probe-rs-profile";
-            save_fx_profile(&profile, &output_dir, profile_name)?;
-
-            Ok(())
+            core_sample.callstacks.push(sample);
         }
+
+        if start.elapsed() > duration {
+            break;
+        }
+
+        // sleep a bit before next sample
+        std::thread::sleep(sampling_interval);
     }
+
+    let profile = make_fx_profile(
+        &samples,
+        &start_sys_time,
+        &sampling_interval,
+        executable_location,
+        &elf_bytes,
+    )?;
+
+    let output_dir = std::env::current_dir()?;
+    let profile_name = "probe-rs-profile";
+    save_fx_profile(&profile, &output_dir, profile_name)?;
+
+    Ok(())
+}
+
+fn dwarf_unwind<'a>(
+    core: &mut probe_rs::Core<'a>,
+    debug_info: &probe_rs_debug::DebugInfo,
+) -> Vec<StackFrameInfo> {
+    let debug_registers = DebugRegisters::from_core(core);
+    let exception_handler = probe_rs_debug::exception_handler_for_core(core.core_type());
+    let instruction_set = core.instruction_set().unwrap();
+    let stack_frames = debug_info
+        .unwind(
+            core,
+            debug_registers,
+            exception_handler.as_ref(),
+            Some(instruction_set),
+            usize::MAX,
+        )
+        .unwrap();
+
+    // reverse callstack so root node is first
+    let stack_frames: Vec<StackFrameInfo> = (&stack_frames)
+        .into_iter()
+        .rev()
+        .map(|frame| StackFrameInfo {
+            pc: frame
+                .pc
+                .try_into()
+                .expect("PC should not be larger than 64 bits"),
+        })
+        .collect();
+
+    stack_frames
+}
+
+fn read_mem<'a>(core: &mut probe_rs::Core<'a>, addr: u64) -> u64 {
+    if core.is_64_bit() {
+        core.read_word_64(addr).unwrap()
+    } else {
+        core.read_word_32(addr).unwrap() as u64
+    }
+}
+
+// TODO: make this work outside of arm-32bit
+// RISC-V needs different handling - fp and ra swapped
+fn frame_pointer_stack_walk<'a>(core: &mut probe_rs::Core<'a>) -> Vec<StackFrameInfo> {
+    let mut stack_frames = Vec::new();
+    let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
+    let mut return_addr: u64 = core.read_core_reg(core.return_address()).unwrap();
+
+    stack_frames.push(StackFrameInfo { pc: return_addr });
+
+    while frame_pointer != 0 {
+        return_addr = read_mem(core, frame_pointer + 4);
+        stack_frames.push(StackFrameInfo { pc: return_addr });
+        frame_pointer = read_mem(core, frame_pointer);
+    }
+
+    stack_frames.into_iter().rev().collect()
 }
