@@ -338,16 +338,14 @@ fn read_mem<'a>(core: &mut probe_rs::Core<'a>, addr: u64) -> u64 {
 // RISC-V needs different handling - fp and ra swapped
 fn frame_pointer_stack_walk<'a>(core: &mut probe_rs::Core<'a>) -> Vec<StackFrameInfo> {
     let mut stack_frames = Vec::new();
-    let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
-    let mut return_addr: u64 = core.read_core_reg(core.return_address()).unwrap();
 
+    let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
     let program_counter: u64 = core.read_core_reg(core.program_counter()).unwrap();
 
     stack_frames.push(StackFrameInfo::ProgramCounter(program_counter));
-    stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
 
     while frame_pointer != 0 {
-        return_addr = read_mem(core, frame_pointer + 4);
+        let return_addr = read_mem(core, frame_pointer + 4);
         stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
         frame_pointer = read_mem(core, frame_pointer);
     }
