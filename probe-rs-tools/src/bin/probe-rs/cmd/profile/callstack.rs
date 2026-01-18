@@ -47,8 +47,9 @@ impl std::fmt::Display for CallstackProfileMethod {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct StackFrameInfo {
-    pc: u64,
+enum StackFrameInfo {
+    ProgramCounter(u64),
+    ReturnAddress(u64),
 }
 
 impl StackFrameInfo {
@@ -56,8 +57,13 @@ impl StackFrameInfo {
         self: &StackFrameInfo,
         category: fxprofpp::CategoryHandle,
     ) -> fxprofpp::FrameInfo {
+        let frame = match self {
+            Self::ProgramCounter(addr) => fxprofpp::Frame::InstructionPointer(*addr),
+            Self::ReturnAddress(addr) => fxprofpp::Frame::ReturnAddress(*addr),
+        };
+
         fxprofpp::FrameInfo {
-            frame: fxprofpp::Frame::InstructionPointer(self.pc),
+            frame: frame,
             category_pair: category.into(),
             flags: fxprofpp::FrameFlags::empty(),
         }
@@ -302,13 +308,19 @@ fn dwarf_unwind<'a>(
     // reverse callstack so root node is first
     let stack_frames: Vec<StackFrameInfo> = (&stack_frames)
         .into_iter()
-        .rev()
-        .map(|frame| StackFrameInfo {
-            pc: frame
+        .enumerate()
+        .map(|(idx, frame)| {
+            let addr: u64 = frame
                 .pc
                 .try_into()
-                .expect("PC should not be larger than 64 bits"),
+                .expect("PC should not be larger than 64 bits");
+
+            match idx {
+                0 => StackFrameInfo::ProgramCounter(addr),
+                _ => StackFrameInfo::ReturnAddress(addr),
+            }
         })
+        .rev()
         .collect();
 
     stack_frames
@@ -329,11 +341,14 @@ fn frame_pointer_stack_walk<'a>(core: &mut probe_rs::Core<'a>) -> Vec<StackFrame
     let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
     let mut return_addr: u64 = core.read_core_reg(core.return_address()).unwrap();
 
-    stack_frames.push(StackFrameInfo { pc: return_addr });
+    let program_counter: u64 = core.read_core_reg(core.program_counter()).unwrap();
+
+    stack_frames.push(StackFrameInfo::ProgramCounter(program_counter));
+    stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
 
     while frame_pointer != 0 {
         return_addr = read_mem(core, frame_pointer + 4);
-        stack_frames.push(StackFrameInfo { pc: return_addr });
+        stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
         frame_pointer = read_mem(core, frame_pointer);
     }
 
