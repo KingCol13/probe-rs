@@ -50,7 +50,7 @@ impl std::fmt::Display for CallstackProfileMethod {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 enum StackFrameInfo {
     ProgramCounter(u64),
     ReturnAddress(u64),
@@ -70,6 +70,22 @@ impl StackFrameInfo {
             frame: frame,
             category_pair: category.into(),
             flags: fxprofpp::FrameFlags::empty(),
+        }
+    }
+}
+
+// Format addresses as hex for debugging
+impl std::fmt::Debug for StackFrameInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProgramCounter(addr) => f
+                .debug_tuple("ProgramCounter")
+                .field(&format!("{addr:#x}"))
+                .finish(),
+            Self::ReturnAddress(addr) => f
+                .debug_tuple("ReturnAddress")
+                .field(&format!("{addr:#x}"))
+                .finish(),
         }
     }
 }
