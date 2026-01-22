@@ -303,12 +303,19 @@ fn dwarf_unwind<'a>(
             Some(instruction_set),
             usize::MAX,
         )
-        .unwrap();
+        .unwrap_or_else(|_| {
+            // empty sample if unwind fails
+            tracing::debug!("Unable to unwind, discarding callstack");
+            Vec::new()
+        });
 
+    // filter out inlined functions since they do not need to be recorded (they can be added at
+    // symbolication time)
     // reverse callstack so root node is first
     let stack_frames: Vec<StackFrameInfo> = (&stack_frames)
         .into_iter()
         .enumerate()
+        .filter(|(idx, frame)| *idx == 0 || !frame.is_inlined)
         .map(|(idx, frame)| {
             let addr: u64 = frame
                 .pc
