@@ -29,13 +29,17 @@ pub(crate) struct CallstackProfileArgs {
 
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallstackProfileMethod {
-    /// Naive dwarf debug, halt -> walk callstack using debug info -> resume
+    /// Naively (halt -> walk -> resume) unwind callstack using dwarf debug information
     NaiveDwarf,
+    /// Naively (halt -> walk -> resume) unwind callstack using frame pointers and frame record
+    /// chain
     NaiveFramePointer,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OutputFormat {
+    /// Firefox profiler output format that can be opened using:
+    /// samply load probe-rs-profile.json.gz
     FirefoxProfiler,
 }
 
