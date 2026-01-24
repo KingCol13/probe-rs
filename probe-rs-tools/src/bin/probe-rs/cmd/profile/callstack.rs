@@ -3,11 +3,13 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use object::ObjectSymbol;
 use probe_rs::MemoryInterface;
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
 
 use fxprof_processed_profile as fxprofpp;
+use object::Object;
 use probe_rs::Session;
 use samply_object;
 
@@ -131,12 +133,12 @@ pub enum MakeFxProfileError {
     DebugId,
 }
 
-fn make_fx_profile(
+fn make_fx_profile<'data>(
     core_callstacks: &[CoreSamples],
     start_time: &SystemTime,
     sampling_interval: &Duration,
     binary_path: &std::path::Path,
-    elf_bytes: &[u8],
+    obj: &impl Object<'data>,
 ) -> Result<fxprofpp::Profile, MakeFxProfileError> {
     let start_timestamp = (*start_time).into();
 
@@ -169,9 +171,8 @@ fn make_fx_profile(
         fxprofpp::Timestamp::from_nanos_since_reference(0),
     );
 
-    let elf = object::File::parse(&*elf_bytes).map_err(|e| MakeFxProfileError::ParseElf(e))?;
-    let debug_id = samply_object::debug_id_for_object(&elf).ok_or(MakeFxProfileError::DebugId)?;
-    let code_id = samply_object::code_id_for_object(&elf);
+    let debug_id = samply_object::debug_id_for_object(obj).ok_or(MakeFxProfileError::DebugId)?;
+    let code_id = samply_object::code_id_for_object(obj);
 
     let library_info = fxprofpp::LibraryInfo {
         name: binary_name.clone(),
@@ -185,7 +186,7 @@ fn make_fx_profile(
     };
     let library = profile.add_lib(library_info);
 
-    let start_avma = samply_object::relative_address_base(&elf);
+    let start_avma = samply_object::relative_address_base(obj);
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for CoreSamples { core, callstacks } in core_callstacks.iter() {
@@ -233,6 +234,28 @@ fn save_fx_profile(
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("Could not find entry point address range")]
+pub struct EntryPointAddressRangeError;
+
+/// Find the range of addresses of the ELF's entry point function
+fn get_entry_point_address_range<'data>(
+    obj: &impl Object<'data>,
+) -> Result<std::ops::Range<u64>, EntryPointAddressRangeError> {
+    let entry_start = obj.entry();
+
+    // find next function symbol after entry point
+    let entry_end = obj
+        .symbols()
+        .filter(|sym| sym.kind() == object::SymbolKind::Text)
+        .map(|sym| sym.address())
+        .filter(|addr| *addr > entry_start)
+        .min()
+        .ok_or(EntryPointAddressRangeError)?;
+
+    Ok(entry_start..entry_end)
+}
+
 pub(super) fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
@@ -246,6 +269,8 @@ pub(super) fn callstack_profile(
 
     let elf_bytes = std::fs::read(executable_location)?;
     let debug_info = DebugInfo::from_raw(&elf_bytes)?;
+    let elf = object::File::parse(elf_bytes.as_slice())?;
+    let entry_address_range = get_entry_point_address_range(&elf)?;
 
     let available_cores: Vec<_> = session.list_cores().iter().map(|c| c.0).collect();
 
@@ -273,7 +298,9 @@ pub(super) fn callstack_profile(
             core.halt(Duration::from_millis(10))?;
             let callstack = match method {
                 CallstackProfileMethod::NaiveDwarf => dwarf_unwind(&mut core, &debug_info),
-                CallstackProfileMethod::NaiveFramePointer => frame_pointer_stack_walk(&mut core),
+                CallstackProfileMethod::NaiveFramePointer => {
+                    frame_pointer_stack_walk(&mut core, &entry_address_range)
+                }
             };
             core.run()?;
 
@@ -298,7 +325,7 @@ pub(super) fn callstack_profile(
         &start_sys_time,
         &sampling_interval,
         executable_location,
-        &elf_bytes,
+        &elf,
     )?;
 
     let output_dir = std::env::current_dir()?;
@@ -363,7 +390,10 @@ fn read_mem<'a>(core: &mut probe_rs::Core<'a>, addr: u64) -> u64 {
 
 // TODO: make this work outside of arm-32bit
 // RISC-V needs different handling - fp and ra swapped
-fn frame_pointer_stack_walk<'a>(core: &mut probe_rs::Core<'a>) -> Vec<StackFrameInfo> {
+fn frame_pointer_stack_walk<'a>(
+    core: &mut probe_rs::Core<'a>,
+    entry_point_address_range: &std::ops::Range<u64>,
+) -> Vec<StackFrameInfo> {
     let mut stack_frames = Vec::new();
 
     let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
@@ -371,9 +401,20 @@ fn frame_pointer_stack_walk<'a>(core: &mut probe_rs::Core<'a>) -> Vec<StackFrame
 
     stack_frames.push(StackFrameInfo::ProgramCounter(program_counter));
 
+    // Section 6.2.1.4 of the AAPCS32 states:
+    // The end of the frame record chain is indicated by the address zero in the address for the
+    // previous frame.
+    // Most startup code does not implement this though, so we need the extra return address based
+    // stopping condition.
     while frame_pointer != 0 {
         let return_addr = read_mem(core, frame_pointer + 4);
         stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
+
+        // Stop if the return address was in the entry point function
+        if entry_point_address_range.contains(&return_addr) {
+            break;
+        }
+
         frame_pointer = read_mem(core, frame_pointer);
     }
 
