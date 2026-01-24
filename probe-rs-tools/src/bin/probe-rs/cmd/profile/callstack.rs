@@ -356,7 +356,7 @@ fn dwarf_unwind<'a>(
     // filter out inlined functions since they do not need to be recorded (they can be added at
     // symbolication time)
     // reverse callstack so root node is first
-    let stack_frames: Vec<StackFrameInfo> = (&stack_frames)
+    let stack_frames: Vec<StackFrameInfo> = stack_frames
         .iter()
         .enumerate()
         .filter(|(idx, frame)| *idx == 0 || !frame.is_inlined)
