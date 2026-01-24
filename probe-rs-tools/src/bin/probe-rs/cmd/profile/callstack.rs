@@ -127,8 +127,6 @@ pub enum MakeFxProfileError {
     InvalidUtf8,
     #[error("File name not found for ELF file")]
     NoFileStem,
-    #[error("Could not parse ELF file")]
-    ParseElf(#[source] object::Error),
     #[error("Could not generate debug ID for ELF")]
     DebugId,
 }
