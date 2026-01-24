@@ -260,10 +260,10 @@ pub(super) fn callstack_profile(
     let duration = Duration::from_secs(duration);
     let sampling_interval = Duration::from_nanos(interval_ns);
 
-    let elf_bytes = std::fs::read(executable_location)?;
-    let debug_info = DebugInfo::from_raw(&elf_bytes)?;
-    let elf = object::File::parse(elf_bytes.as_slice())?;
-    let entry_address_range = get_entry_point_address_range(&elf)?;
+    let object_bytes = std::fs::read(executable_location)?;
+    let debug_info = DebugInfo::from_raw(&object_bytes)?;
+    let object = object::File::parse(object_bytes.as_slice())?;
+    let entry_address_range = get_entry_point_address_range(&object)?;
 
     let available_cores: Vec<_> = session.list_cores().iter().map(|c| c.0).collect();
 
@@ -318,7 +318,7 @@ pub(super) fn callstack_profile(
         &start_sys_time,
         &sampling_interval,
         executable_location,
-        &elf,
+        &object,
     )?;
 
     let output_dir = std::env::current_dir()?;
