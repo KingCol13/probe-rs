@@ -187,7 +187,6 @@ fn make_fx_profile<'data>(
     profile.add_lib_mapping(process, library, start_avma, u64::MAX, 0);
 
     for CoreSamples { core, callstacks } in core_callstacks.iter() {
-        //TODO: check whether is_main should be set or not
         let thread = profile.add_thread(
             process,
             *core as u32,
