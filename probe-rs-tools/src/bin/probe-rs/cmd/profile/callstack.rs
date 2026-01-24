@@ -17,9 +17,11 @@ use samply_object;
 pub(crate) struct CallstackProfileArgs {
     #[clap(subcommand)]
     pub(crate) method: CallstackProfileMethod,
-    /// Target interval between samples in ns
-    #[clap(long, default_value_t = 500_000_000)]
-    pub(crate) interval_ns: u64,
+    /// Target sampling rate, in Hz. Higher frequencies will have a larger impact on execution and
+    /// so will be less representative of true behaviour. If the rate is set too high it may not be
+    /// achieved.
+    #[clap(short, long, default_value_t = 2)]
+    pub(crate) rate: u32,
     /// Comma separated list of cores to profile, numbered from 0. If empty all cores will be
     /// profiled
     #[clap(long, value_delimiter = ',')]
@@ -253,12 +255,12 @@ pub(super) fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
     duration: u64,
-    interval_ns: u64,
+    rate: u32,
     cores: &[usize],
     executable_location: &Path,
 ) -> anyhow::Result<()> {
     let duration = Duration::from_secs(duration);
-    let sampling_interval = Duration::from_nanos(interval_ns);
+    let sampling_interval = Duration::from_secs(1) / rate;
 
     let object_bytes = std::fs::read(executable_location)?;
     let debug_info = DebugInfo::from_raw(&object_bytes)?;
@@ -282,6 +284,7 @@ pub(super) fn callstack_profile(
     let start_sys_time = std::time::SystemTime::now();
 
     loop {
+        let current_sample_start = std::time::Instant::now();
         // TODO: all cores should be stopped simultaneously before samples are collected for more
         // accurate results
         for core_sample in samples.iter_mut() {
@@ -309,8 +312,9 @@ pub(super) fn callstack_profile(
             break;
         }
 
-        // sleep a bit before next sample
-        std::thread::sleep(sampling_interval);
+        // sleep a bit before next sample to try to match sampling rate
+        let current_sample_time = current_sample_start.elapsed();
+        std::thread::sleep(sampling_interval.saturating_sub(current_sample_time));
     }
 
     let profile = make_fx_profile(
