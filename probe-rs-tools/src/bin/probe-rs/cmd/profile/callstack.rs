@@ -69,7 +69,7 @@ impl StackFrameInfo {
         };
 
         fxprofpp::FrameInfo {
-            frame: frame,
+            frame,
             category_pair: category.into(),
             flags: fxprofpp::FrameFlags::empty(),
         }
@@ -142,7 +142,7 @@ fn make_fx_profile<'data>(
 
     let abs_binary_path: String = binary_path
         .canonicalize()
-        .map_err(|e| MakeFxProfileError::Canonicalize(e))?
+        .map_err(MakeFxProfileError::Canonicalize)?
         .to_str()
         .ok_or(MakeFxProfileError::InvalidUtf8)?
         .to_owned();
@@ -154,11 +154,8 @@ fn make_fx_profile<'data>(
         .expect("Abs path converted to UTF-8 so file stem should too")
         .to_owned();
 
-    let mut profile = fxprofpp::Profile::new(
-        &binary_name,
-        start_timestamp,
-        (*sampling_interval).into(),
-    );
+    let mut profile =
+        fxprofpp::Profile::new(&binary_name, start_timestamp, (*sampling_interval).into());
 
     let category = profile.add_category("raw", fxprofpp::CategoryColor::Yellow);
 
@@ -214,7 +211,7 @@ fn make_fx_profile<'data>(
 
 fn save_fx_profile(
     profile: &fxprofpp::Profile,
-    output_dir: &std::path::PathBuf,
+    output_dir: &Path,
     profile_name: &str,
 ) -> std::io::Result<()> {
     let output_path = output_dir.join(profile_name).with_extension("json.gz");
@@ -356,7 +353,7 @@ fn dwarf_unwind<'a>(
     // symbolication time)
     // reverse callstack so root node is first
     let stack_frames: Vec<StackFrameInfo> = (&stack_frames)
-        .into_iter()
+        .iter()
         .enumerate()
         .filter(|(idx, frame)| *idx == 0 || !frame.is_inlined)
         .map(|(idx, frame)| {
