@@ -76,7 +76,7 @@ impl ProfileCmd {
                 &callstack_args.method,
                 &mut session,
                 self.duration,
-                callstack_args.interval_ns,
+                callstack_args.rate,
                 &callstack_args.cores,
                 executable_location,
             ),
