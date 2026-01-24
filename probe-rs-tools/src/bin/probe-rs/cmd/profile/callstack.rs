@@ -31,10 +31,10 @@ pub(crate) struct CallstackProfileArgs {
 
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallstackProfileMethod {
-    /// Naively (halt -> walk -> resume) unwind callstack using dwarf debug information
+    /// Naively (halt -> walk -> resume) unwind callstack using dwarf debug information.
     NaiveDwarf,
     /// Naively (halt -> walk -> resume) unwind callstack using frame pointers and frame record
-    /// chain
+    /// chain. You should set the codegen option force-frame-pointers=yes for this to work.
     NaiveFramePointer,
 }
 
