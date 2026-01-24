@@ -155,7 +155,6 @@ fn make_fx_profile<'data>(
         .to_owned();
 
     let mut profile = fxprofpp::Profile::new(
-        // TODO: give this a better name
         &binary_name,
         start_timestamp,
         (*sampling_interval).into(),
