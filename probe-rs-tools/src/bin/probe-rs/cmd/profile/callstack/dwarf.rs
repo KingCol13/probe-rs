@@ -19,7 +19,7 @@ pub fn dwarf_unwind<'a>(
         )
         .unwrap_or_else(|_| {
             // empty sample if unwind fails
-            tracing::debug!("Unable to unwind, discarding callstack");
+            tracing::warn!("Unable to unwind, recording empty sample");
             Vec::new()
         });
 
