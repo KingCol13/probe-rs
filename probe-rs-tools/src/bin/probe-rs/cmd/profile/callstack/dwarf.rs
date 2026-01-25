@@ -2,7 +2,7 @@ use probe_rs_debug::DebugRegisters;
 
 use super::StackFrameInfo;
 
-pub fn dwarf_unwind<'a>(
+pub(crate) fn dwarf_unwind<'a>(
     core: &mut probe_rs::Core<'a>,
     debug_info: &probe_rs_debug::DebugInfo,
 ) -> Vec<StackFrameInfo> {
