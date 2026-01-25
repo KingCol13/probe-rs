@@ -35,7 +35,9 @@ pub(crate) enum CallstackProfileMethod {
     /// Naively (halt -> walk -> resume) unwind callstack using dwarf debug information.
     NaiveDwarf,
     /// Naively (halt -> walk -> resume) unwind callstack using frame pointers and frame record
-    /// chain. You should set the codegen option force-frame-pointers=yes for this to work.
+    /// chain. You should ensure the program was compiled with frame pointers enabled.
+    /// For rust, set the codegen option force-frame-pointers=yes.
+    /// For C/C++ gcc/clang, set -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer.
     NaiveFramePointer,
 }
 
