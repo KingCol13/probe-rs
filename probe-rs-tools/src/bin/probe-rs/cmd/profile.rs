@@ -73,12 +73,10 @@ impl ProfileCmd {
                 flat_args.limit,
             ),
             ProfileType::Callstack(callstack_args) => callstack::callstack_profile(
-                &callstack_args.method,
                 &mut session,
                 self.duration,
-                callstack_args.rate,
-                &callstack_args.cores,
                 executable_location,
+                &callstack_args,
             ),
         }
     }
