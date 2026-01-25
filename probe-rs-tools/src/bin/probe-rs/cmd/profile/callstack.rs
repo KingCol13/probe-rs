@@ -5,6 +5,7 @@ use std::time::Instant;
 use probe_rs::Session;
 use probe_rs_debug::DebugInfo;
 
+use anyhow::Context;
 use object::{Object, ObjectSymbol};
 mod dwarf;
 mod frame_pointer;
@@ -160,7 +161,8 @@ pub(super) fn callstack_profile(
             let callstack = match callstack_profile_args.method {
                 CallstackProfileMethod::NaiveDwarf => dwarf::dwarf_unwind(&mut core, &debug_info),
                 CallstackProfileMethod::NaiveFramePointer => {
-                    frame_pointer::frame_pointer_unwind(&mut core, &entry_address_range)?
+                    frame_pointer::frame_pointer_unwind(&mut core, &entry_address_range)
+                        .context("Unwinding error, was the program compiled with frame pointers?")?
                 }
             };
             core.run()?;
