@@ -129,9 +129,11 @@ gdbstub = "0.7.6"
 
 # profiling
 fxprof-processed-profile = "0.8.1"
-object = { version = "0.37.3", default-features = false, features = ["elf", "std"] }
+object = { version = "0.37.3", default-features = false, features = ["elf", "std", "read_core"] }
 flate2 = { version = "1.1.2", default-features = false, features = ["zlib-rs"] }
-samply-object = { git = "https://github.com/mstange/samply.git", rev = "382a2f9318636651d92ce0d85b13022b973386c5", default-features = false }
+# samply-object dependencies for profiling, to replace with samply-object when released
+debugid = { version = "0.8.0", default-features = false }
+uuid = { version = "1.0", default-features = false }
 
 [build-dependencies]
 git-version = "0.3"

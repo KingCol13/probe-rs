@@ -3,15 +3,13 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use object::ObjectSymbol;
-use probe_rs::MemoryInterface;
+use probe_rs::{MemoryInterface, Session};
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
 
 use fxprof_processed_profile as fxprofpp;
-use object::Object;
-use probe_rs::Session;
-use samply_object;
+use object::{Object, ObjectSymbol};
+mod samply_object;
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CallstackProfileArgs {
