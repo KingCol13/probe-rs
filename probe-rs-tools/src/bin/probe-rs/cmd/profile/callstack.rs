@@ -3,12 +3,13 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 
-use probe_rs::{MemoryInterface, Session};
+use probe_rs::Session;
 use probe_rs_debug::DebugInfo;
 use probe_rs_debug::DebugRegisters;
 
 use fxprof_processed_profile as fxprofpp;
 use object::{Object, ObjectSymbol};
+mod frame_pointer;
 mod samply_object;
 
 #[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
@@ -293,7 +294,7 @@ pub(super) fn callstack_profile(
             let callstack = match method {
                 CallstackProfileMethod::NaiveDwarf => dwarf_unwind(&mut core, &debug_info),
                 CallstackProfileMethod::NaiveFramePointer => {
-                    frame_pointer_stack_walk(&mut core, &entry_address_range)
+                    frame_pointer::frame_pointer_unwind(&mut core, &entry_address_range)?
                 }
             };
             core.run()?;
@@ -373,45 +374,4 @@ fn dwarf_unwind<'a>(
         .collect();
 
     stack_frames
-}
-
-fn read_mem<'a>(core: &mut probe_rs::Core<'a>, addr: u64) -> u64 {
-    if core.is_64_bit() {
-        core.read_word_64(addr).unwrap()
-    } else {
-        core.read_word_32(addr).unwrap() as u64
-    }
-}
-
-// TODO: make this work outside of arm-32bit
-// RISC-V needs different handling - fp and ra swapped
-fn frame_pointer_stack_walk<'a>(
-    core: &mut probe_rs::Core<'a>,
-    entry_point_address_range: &std::ops::Range<u64>,
-) -> Vec<StackFrameInfo> {
-    let mut stack_frames = Vec::new();
-
-    let mut frame_pointer: u64 = core.read_core_reg(core.frame_pointer()).unwrap();
-    let program_counter: u64 = core.read_core_reg(core.program_counter()).unwrap();
-
-    stack_frames.push(StackFrameInfo::ProgramCounter(program_counter));
-
-    // Section 6.2.1.4 of the AAPCS32 states:
-    // The end of the frame record chain is indicated by the address zero in the address for the
-    // previous frame.
-    // Most startup code does not implement this though, so we need the extra return address based
-    // stopping condition.
-    while frame_pointer != 0 {
-        let return_addr = read_mem(core, frame_pointer + 4);
-        stack_frames.push(StackFrameInfo::ReturnAddress(return_addr));
-
-        // Stop if the return address was in the entry point function
-        if entry_point_address_range.contains(&return_addr) {
-            break;
-        }
-
-        frame_pointer = read_mem(core, frame_pointer);
-    }
-
-    stack_frames.into_iter().rev().collect()
 }
