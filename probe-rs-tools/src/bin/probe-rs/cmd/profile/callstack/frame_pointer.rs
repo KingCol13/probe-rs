@@ -28,24 +28,24 @@ fn read_mem<'a>(core: &mut probe_rs::Core<'a>, addr: u64) -> Result<u64, probe_r
 /// Offsets of return address and next frame pointer from current frame pointer
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct FpUnwindOffsets {
-    return_address: i64,
     frame_pointer: i64,
+    return_address: i64,
 }
 
 impl FpUnwindOffsets {
     fn new(instruction_set: &InstructionSet) -> Result<Self, FramePointerUnwindError> {
         match instruction_set {
             InstructionSet::A32 | InstructionSet::Thumb2 => Ok(Self {
-                return_address: 4,
                 frame_pointer: 0,
+                return_address: 4,
             }),
             InstructionSet::A64 => Ok(Self {
-                return_address: 8,
                 frame_pointer: 0,
+                return_address: 8,
             }),
             InstructionSet::RV32 | InstructionSet::RV32C => Ok(Self {
-                return_address: -4,
                 frame_pointer: -8,
+                return_address: -4,
             }),
             // not supporting xtensa yet because it's complicated
             _ => Err(FramePointerUnwindError::UnsupportedInstructionSet(
@@ -81,9 +81,11 @@ pub fn frame_pointer_unwind<'a>(
     // - Frame pointer is 0:
     //   - For arm32/aarch64 section 6.2.1.4 of the AAPCS32 / 6.4.6 of the AAPCS64 states:
     //   "The end of the frame record chain is indicated by the address zero in the address for the
-    //   previous frame.""
+    //   previous frame." - https://github.com/ARM-software/abi-aa/releases
     //   Most startup code does not implement this though.
-    //   - For RISC-V offsets are negative so a zero address would gurarantee an underflow.
+    //   - Version 1.1 (pre-release), section 1.2 of the RISC-V ABI states:
+    //   "The end of the frame record chain is indicated by the address zero appearing as the next
+    //   link in the chain." - https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases
     while frame_pointer != 0 {
         let return_address_address = frame_pointer
             .checked_add_signed(offsets.return_address)
