@@ -287,7 +287,8 @@ pub(super) fn callstack_profile(
     loop {
         let current_sample_start = std::time::Instant::now();
         // TODO: all cores should be stopped simultaneously before samples are collected for more
-        // accurate results
+        // accurate results - if core 1 is waiting on core 0 while core 0 is stopped then core 1
+        // will likely be in synchronization code when sampled.
         for core_sample in samples.iter_mut() {
             let mut core = session.core(core_sample.core)?;
 
