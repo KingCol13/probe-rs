@@ -4,7 +4,7 @@ use probe_rs::MemoryInterface;
 use super::StackFrameInfo;
 
 #[derive(Debug, thiserror::Error)]
-pub enum FramePointerUnwindError {
+pub(crate) enum FramePointerUnwindError {
     #[error("Could not determine instruction set")]
     DetermineInstructionSet(#[source] probe_rs::Error),
     #[error("Could not read register")]
@@ -55,7 +55,7 @@ impl FpUnwindOffsets {
     }
 }
 
-pub fn frame_pointer_unwind<'a>(
+pub(crate) fn frame_pointer_unwind<'a>(
     core: &mut probe_rs::Core<'a>,
     entry_point_address_range: &std::ops::Range<u64>,
 ) -> Result<Vec<StackFrameInfo>, FramePointerUnwindError> {

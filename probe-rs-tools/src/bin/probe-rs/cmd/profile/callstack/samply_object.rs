@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// Tries to obtain a CodeId for an object.
 ///
 /// This currently only handles mach-O and ELF.
-pub fn code_id_for_object<'data>(obj: &impl Object<'data>) -> Option<CodeId> {
+pub(crate) fn code_id_for_object<'data>(obj: &impl Object<'data>) -> Option<CodeId> {
     // ELF
     if let Ok(Some(build_id)) = obj.build_id() {
         return Some(CodeId::ElfBuildId(ElfBuildId::from_bytes(build_id)));
@@ -25,7 +25,7 @@ pub fn code_id_for_object<'data>(obj: &impl Object<'data>) -> Option<CodeId> {
 /// Tries to obtain a DebugId for an object. This uses the build ID, if available,
 /// and falls back to hashing the first page of the text section otherwise.
 /// Returns None on failure.
-pub fn debug_id_for_object<'data>(obj: &impl Object<'data>) -> Option<DebugId> {
+pub(crate) fn debug_id_for_object<'data>(obj: &impl Object<'data>) -> Option<DebugId> {
     // ELF
     if let Ok(Some(build_id)) = obj.build_id() {
         return Some(DebugId::from_identifier(build_id, obj.is_little_endian()));
@@ -66,7 +66,7 @@ pub fn debug_id_for_object<'data>(obj: &impl Object<'data>) -> Option<DebugId> {
 ///    0xffffffff81000000. Moreover, the base address seems to coincide with the
 ///    vmaddr of the .text section, which is readily-available in perf.data files
 ///    (in a synthetic mapping called "[kernel.kallsyms]_text").
-pub fn relative_address_base<'data>(obj: &impl Object<'data>) -> u64 {
+pub(crate) fn relative_address_base<'data>(obj: &impl Object<'data>) -> u64 {
     use object::read::ObjectSegment;
     if let FileFlags::Elf { .. } = obj.flags() {
         // This is an ELF image. "Relative addresses" are relative to the
@@ -144,7 +144,7 @@ impl DebugIdExt for DebugId {
 ///
 /// All types need to be treated rather differently, see their respective documentation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum CodeId {
+pub(crate) enum CodeId {
     /// The code ID for a Linux ELF file. This is the "ELF build ID" (also called "GNU build ID").
     /// The build ID is usually 20 bytes, commonly written out as 40 hex chars.
     ///
@@ -180,7 +180,7 @@ impl std::fmt::Display for CodeId {
 /// binaries or debug files from a `debuginfod` symbol server. it does not have to be
 /// paired with the binary name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ElfBuildId(Vec<u8>);
+pub(crate) struct ElfBuildId(Vec<u8>);
 
 impl ElfBuildId {
     /// Create a new `ElfBuildId` from a slice of bytes (commonly a sha1 hash
