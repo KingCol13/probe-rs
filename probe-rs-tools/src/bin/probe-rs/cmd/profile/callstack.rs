@@ -12,15 +12,15 @@ mod dwarf;
 mod frame_pointer;
 mod samply_object;
 
-#[derive(clap::Args, Clone, Debug, PartialEq, Eq)]
+#[derive(clap::Args, Clone, Debug, PartialEq)]
 pub(crate) struct CallstackProfileArgs {
     #[clap(subcommand)]
     pub(crate) method: CallstackProfileMethod,
     /// Target sampling rate, in Hz. Higher frequencies will have a larger impact on execution and
     /// so will be less representative of true behaviour. If the rate is set too high it may not be
     /// achieved.
-    #[clap(short, long, default_value_t = 2)]
-    pub(crate) rate: u32,
+    #[clap(short, long, default_value_t = 2.)]
+    pub(crate) rate: f64,
     /// Comma separated list of cores to profile, numbered from 0. If empty all cores will be
     /// profiled
     #[clap(long, value_delimiter = ',')]
@@ -256,12 +256,12 @@ pub(super) fn callstack_profile(
     method: &CallstackProfileMethod,
     session: &mut Session,
     duration: u64,
-    rate: u32,
+    rate: f64,
     cores: &[usize],
     executable_location: &Path,
 ) -> anyhow::Result<()> {
     let duration = Duration::from_secs(duration);
-    let sampling_interval = Duration::from_secs(1) / rate;
+    let sampling_interval = Duration::from_nanos((1e9 / rate) as u64);
 
     let object_bytes = std::fs::read(executable_location)?;
     let debug_info = DebugInfo::from_raw(&object_bytes)?;

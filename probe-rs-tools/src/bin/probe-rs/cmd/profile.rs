@@ -22,7 +22,7 @@ pub(crate) struct ProfileCmd {
     profile_type: ProfileType,
 }
 
-#[derive(clap::Subcommand, Debug, Clone, PartialEq, Eq)]
+#[derive(clap::Subcommand, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 enum ProfileType {
     /// Faster flat profiling that only records currently executing function
