@@ -131,6 +131,12 @@ pub(super) fn callstack_profile(
     executable_location: &Path,
     callstack_profile_args: &CallstackProfileArgs,
 ) -> anyhow::Result<()> {
+    // Disallow sampling multiple cores as this may lead to misleading results (cores are not yet
+    // be halted simultaneously).
+    if callstack_profile_args.cores.len() > 1 {
+        return Err(anyhow::anyhow!("Sampling more than one core not yet supported"))
+    }
+
     let duration = Duration::from_secs(duration);
     let sampling_interval = Duration::from_nanos((1e9 / callstack_profile_args.rate) as u64);
 
