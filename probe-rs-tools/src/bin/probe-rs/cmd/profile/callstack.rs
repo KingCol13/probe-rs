@@ -21,11 +21,10 @@ pub(crate) struct CallstackProfileArgs {
     /// achieved.
     #[clap(short, long, default_value_t = 2.)]
     pub(crate) rate: f64,
-    /// Comma separated list of cores to profile, numbered from 0. If empty all cores will be
-    /// profiled
-    #[clap(long, value_delimiter = ',')]
+    /// Comma separated list of cores to profile, numbered from 0.
+    #[clap(long, value_delimiter = ',', default_values_t = [0])]
     pub(crate) cores: Vec<usize>,
-    /// Output format
+    /// Output format.
     #[clap(long, value_enum, default_value_t = OutputFormat::FirefoxProfiler)]
     pub(crate) output_format: OutputFormat,
 }
@@ -267,14 +266,6 @@ pub(super) fn callstack_profile(
     let debug_info = DebugInfo::from_raw(&object_bytes)?;
     let object = object::File::parse(object_bytes.as_slice())?;
     let entry_address_range = get_entry_point_address_range(&object)?;
-
-    let available_cores: Vec<_> = session.list_cores().iter().map(|c| c.0).collect();
-
-    let cores = if cores.is_empty() {
-        &available_cores
-    } else {
-        cores
-    };
 
     let mut samples: Vec<CoreSamples> = cores
         .iter()
