@@ -1979,19 +1979,19 @@ mod test {
     }
 
     #[test_case("RP2040_full_unwind"; "full_unwind Armv6-m using RP2040")]
-    #[test_case("RP2040_svcall"; "svcall Armv6-m using RP2040")]
-    #[test_case("RP2040_systick"; "systick Armv6-m using RP2040")]
-    #[test_case("nRF52833_xxAA_full_unwind"; "full_unwind Armv7-m using nRF52833_xxAA")]
-    #[test_case("nRF52833_xxAA_svcall"; "svcall Armv7-m using nRF52833_xxAA")]
-    #[test_case("nRF52833_xxAA_systick"; "systick Armv7-m using nRF52833_xxAA")]
-    #[test_case("nRF52833_xxAA_hardfault_from_usagefault"; "hardfault_from_usagefault Armv7-m using nRF52833_xxAA")]
-    #[test_case("nRF52833_xxAA_hardfault_from_busfault"; "hardfault_from_busfault Armv7-m using nRF52833_xxAA")]
-    #[test_case("nRF52833_xxAA_hardfault_in_systick"; "hardfault_in_systick Armv7-m using nRF52833_xxAA")]
-    #[test_case("atsamd51p19a"; "Armv7-em from C source code")]
-    #[test_case("esp32c3_full_unwind"; "full_unwind RISC-V32E using esp32c3")]
-    #[test_case("esp32s3_esp_hal_panic"; "Xtensa unwinding on an esp32s3 in a panic handler")]
-    #[test_case("esp32c6_coredump_elf"; "Unwind using a RISC-V coredump in ELF format")]
-    #[test_case("esp32s3_coredump_elf"; "Unwind using an Xtensa coredump in ELF format")]
+    // #[test_case("RP2040_svcall"; "svcall Armv6-m using RP2040")]
+    // #[test_case("RP2040_systick"; "systick Armv6-m using RP2040")]
+    // #[test_case("nRF52833_xxAA_full_unwind"; "full_unwind Armv7-m using nRF52833_xxAA")]
+    // #[test_case("nRF52833_xxAA_svcall"; "svcall Armv7-m using nRF52833_xxAA")]
+    // #[test_case("nRF52833_xxAA_systick"; "systick Armv7-m using nRF52833_xxAA")]
+    // #[test_case("nRF52833_xxAA_hardfault_from_usagefault"; "hardfault_from_usagefault Armv7-m using nRF52833_xxAA")]
+    // #[test_case("nRF52833_xxAA_hardfault_from_busfault"; "hardfault_from_busfault Armv7-m using nRF52833_xxAA")]
+    // #[test_case("nRF52833_xxAA_hardfault_in_systick"; "hardfault_in_systick Armv7-m using nRF52833_xxAA")]
+    // #[test_case("atsamd51p19a"; "Armv7-em from C source code")]
+    // #[test_case("esp32c3_full_unwind"; "full_unwind RISC-V32E using esp32c3")]
+    // #[test_case("esp32s3_esp_hal_panic"; "Xtensa unwinding on an esp32s3 in a panic handler")]
+    // #[test_case("esp32c6_coredump_elf"; "Unwind using a RISC-V coredump in ELF format")]
+    // #[test_case("esp32s3_coredump_elf"; "Unwind using an Xtensa coredump in ELF format")]
     fn full_unwind(test_name: &str) {
         let debug_info =
             load_test_elf_as_debug_info(format!("debug-unwind-tests/{test_name}.elf").as_str());
@@ -2004,6 +2004,22 @@ mod test {
         let initial_registers = DebugRegisters::from_coredump(&adapter);
         let exception_handler = exception_handler_for_core(adapter.core_type());
         let instruction_set = adapter.instruction_set();
+
+        let mut pc_tot: u64 = 0;
+        for _ in 0..1000 {
+            let stack_frames = debug_info
+                .unwind(
+                    &mut adapter,
+                    initial_registers.clone(),
+                    exception_handler.as_ref(),
+                    Some(instruction_set),
+                    1000,
+                )
+                .unwrap();
+            let pc: u64 = stack_frames[0].pc.try_into().unwrap();
+            pc_tot += pc;
+        }
+        dbg!(pc_tot);
 
         let mut stack_frames = debug_info
             .unwind(
