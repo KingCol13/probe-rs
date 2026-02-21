@@ -98,7 +98,8 @@ impl UnitInfo {
                 }
             }
 
-            // TODO: assuming the ranges don't overlap, sort function dies by start address
+            // Sort function dies by start address for binarys searching later
+            self.function_dies.sort_by_key(|(range, _)| range.start);
         }
     }
 
@@ -125,15 +126,22 @@ impl UnitInfo {
     ) -> Result<Vec<FunctionDie<'debug_info>>, DebugError> {
         tracing::trace!("Searching Function DIE for address {:#010x}", address);
 
-        // TODO: assuming the ranges don't overlap, binary-search for the function DIE containing the address
-        let Some((_, start_offset)) = self
+        // Binary search sorted function_dies for address
+        let partition_point = self
             .function_dies
-            .iter()
-            .find(|(range, _)| range.contains(&address))
-            .cloned()
-        else {
+            .partition_point(|(range, _)| range.start < address);
+
+        // 
+        if partition_point == self.function_dies.len()
+            && !self
+                .function_dies
+                .last()
+                .is_some_and(|(range, _)| range.contains(&address))
+        {
             return Ok(vec![]);
         };
+
+        let start_offset = self.function_dies[partition_point.saturating_sub(1)].1;
 
         let mut entries_cursor = self.unit.entries_at_offset(start_offset)?;
         while let Ok(Some(current)) = entries_cursor.next_dfs() {
