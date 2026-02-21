@@ -1,5 +1,6 @@
 use super::{
     DebugError, DebugRegisters, StackFrame, VariableCache,
+    cfi_index::DwarfCfiIndex,
     exception_handling::ExceptionInterface,
     function_die::{Die, FunctionDie},
     get_object_reference,
@@ -38,6 +39,7 @@ pub struct DebugInfo {
     pub(crate) debug_line_section: gimli::DebugLine<DwarfReader>,
 
     pub(crate) unit_infos: Vec<UnitInfo>,
+    pub(crate) cfi_index: DwarfCfiIndex,
     pub(crate) endianness: gimli::RunTimeEndian,
 
     pub(crate) addr2line: Option<addr2line::Loader>,
@@ -105,6 +107,8 @@ impl DebugInfo {
             };
         }
 
+        let cfi_index = DwarfCfiIndex::try_new(&frame_section).unwrap();
+
         Ok(DebugInfo {
             dwarf: dwarf_cow,
             frame_section,
@@ -112,6 +116,7 @@ impl DebugInfo {
             address_section,
             debug_line_section,
             unit_infos,
+            cfi_index,
             endianness,
             addr2line: None,
         })
@@ -597,7 +602,12 @@ impl DebugInfo {
             tracing::trace!(
                 "UNWIND: Will generate `StackFrame` for function at address (PC) {frame_pc_register_value:#}"
             );
-            let unwind_info = get_unwind_info(&mut unwind_context, &self.frame_section, frame_pc);
+            let unwind_info = get_unwind_info(
+                &mut unwind_context,
+                &self.frame_section,
+                &self.cfi_index,
+                frame_pc,
+            );
 
             // Determining the frame base may need the CFA (Canonical Frame Address) to be calculated first.
             let cfa = unwind_info
@@ -1021,6 +1031,7 @@ pub(crate) fn canonical_path_eq(primary_path: TypedPath, secondary_path: TypedPa
 pub fn get_unwind_info<'a>(
     unwind_context: &'a mut UnwindContext<GimliReaderOffset>,
     frame_section: &DebugFrame<DwarfReader>,
+    cfi_index: &DwarfCfiIndex,
     frame_program_counter: u64,
 ) -> Result<&'a gimli::UnwindTableRow<GimliReaderOffset>, DebugError> {
     let transform_error = |error| {
@@ -1031,12 +1042,12 @@ pub fn get_unwind_info<'a>(
 
     let unwind_bases = BaseAddresses::default();
 
+    let offset = cfi_index
+        .fde_offset_for_relative_address(frame_program_counter)
+        .unwrap() as usize;
+
     let frame_descriptor_entry = frame_section
-        .fde_for_address(
-            &unwind_bases,
-            frame_program_counter,
-            DebugFrame::cie_from_offset,
-        )
+        .fde_from_offset(&unwind_bases, offset.into(), DebugFrame::cie_from_offset)
         .map_err(transform_error)?;
 
     frame_descriptor_entry

@@ -3,6 +3,7 @@
 //! The `debug` module contains various debug functionality, which can be
 //! used to implement a debugger based on `probe-rs`.
 
+mod cfi_index;
 /// Debug information which is parsed from DWARF debugging information.
 pub mod debug_info;
 /// Stepping through a program during debug, at various granularities.
