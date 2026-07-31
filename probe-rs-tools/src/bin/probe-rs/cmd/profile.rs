@@ -4,7 +4,7 @@ mod flat;
 use probe_rs::config::Registry;
 use probe_rs::probe::list::Lister;
 
-use crate::util::flash::{build_loader, run_flash_download};
+use crate::util::{common_options::BinaryDownloadOptions, flash::{build_loader, run_flash_download}};
 use tracing::info;
 
 #[derive(clap::Parser)]
@@ -14,9 +14,6 @@ pub(crate) struct ProfileCmd {
     /// Flash the ELF before profiling
     #[clap(long)]
     flash: bool,
-    /// Reset before profiling
-    #[clap(long)]
-    reset: bool,
     /// Duration of profile in seconds.
     #[clap(long)]
     duration: u64, // Option<u64> If we could catch ctrl-c we can make this optional
@@ -46,16 +43,21 @@ impl ProfileCmd {
         let file_location = self.run.path.as_path();
 
         if self.flash {
+            // We want to allow resetting without flashing so do reset later
+            let download_options_no_reset = BinaryDownloadOptions {
+                reset: false,
+                ..self.run.download_options
+            };
             run_flash_download(
                 &mut session,
                 file_location,
-                &self.run.download_options,
+                &download_options_no_reset,
                 &probe_options,
                 loader,
             )?;
         }
 
-        if self.reset {
+        if self.run.download_options.reset {
             for (core_idx, _) in session.list_cores() {
                 let mut core = match session.core(core_idx) {
                     Ok(core) => core,
